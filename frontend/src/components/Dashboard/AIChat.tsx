@@ -1,133 +1,89 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import { useAuthContext } from "../../../context/AuthContext";
-import Cookies from "js-cookie";
-import "../styles/AIChat.css";
+import { useState, useEffect, useRef } from "react";
+import { useAuthContext } from "../../hooks/useAuthContext";
+import ReactMarkdown from "react-markdown";
+import { FiMessageCircle } from "react-icons/fi";
 
-const API_URLS = [
-  "http://127.0.0.1:5000/api/chat", // Flask API
-  "http://localhost:4000/api/chat/chat", // Express API
-  "http://127.0.0.1:8000/api/chat", // FastAPI
+const CHAT_APIS = [
+  "http://localhost:4000/api/chat",
+  "http://127.0.0.1:8000/api/chat",
 ];
-
-const USER_ANALYSIS_API_URL = "http://127.0.0.1:5000/api/user";
 
 const AIChat = () => {
   const { state } = useAuthContext();
-  const { user, isAuthenticated } = state;
-  const [userInput, setUserInput] = useState("");
-  const [chatHistory, setChatHistory] = useState([]);
-  const [questionnaire, setQuestionnaire] = useState(null);
-  const [financialAnalysis, setFinancialAnalysis] = useState(null);
+  const { user } = state;
+
+  const [input, setInput] = useState("");
+  const [chat, setChat] = useState<
+    { role: "user" | "ai"; text: string; time: string }[]
+  >([]);
   const [loading, setLoading] = useState(false);
-  const chatEndRef = useRef(null);
+  const [showChat, setShowChat] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
 
-  // ✅ Fetch Financial Analysis
-  const fetchFinancialAnalysis = useCallback(async () => {
-    if (!isAuthenticated || !user) return;
+  const formatTime = () =>
+    new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-    try {
-      const token = Cookies.get("token") || localStorage.getItem("token");
-      if (!token) throw new Error("No authentication token found.");
-
-      const response = await fetch(USER_ANALYSIS_API_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        credentials: "include",
-        body: JSON.stringify({ userId: user._id }),
-      });
-
-      if (!response.ok)
-        throw new Error(`Failed to fetch analysis: ${response.status}`);
-
-      const data = await response.json();
-      setFinancialAnalysis(data);
-    } catch (error) {
-      console.error("❌ Financial Analysis Fetch Error:", error.message);
-    }
-  }, [isAuthenticated, user]);
-
-  // ✅ Fetch Questionnaire
-  const fetchQuestionnaire = useCallback(async () => {
-    if (!isAuthenticated || !user) return;
-
-    try {
-      const token = Cookies.get("token") || localStorage.getItem("token");
-      if (!token) throw new Error("No authentication token found.");
-
-      const response = await fetch(
-        "http://localhost:4000/api/questionnaire/latest",
-        {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          credentials: "include",
-        }
-      );
-
-      if (!response.ok)
-        throw new Error(`Failed to fetch questionnaire: ${response.status}`);
-
-      const data = await response.json();
-      setQuestionnaire(data);
-    } catch (error) {
-      console.error("❌ Questionnaire Fetch Error:", error.message);
-    }
-  }, [isAuthenticated, user]);
-
-  useEffect(() => {
-    fetchQuestionnaire();
-    fetchFinancialAnalysis();
-  }, [fetchQuestionnaire, fetchFinancialAnalysis]);
-
-  // ✅ Scroll to latest message
+  // Scroll to bottom
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatHistory]);
+  }, [chat]);
 
-  // ✅ Send Message to AI
-  const sendMessageToAI = async (e) => {
+  // Load chat per user from localStorage
+  useEffect(() => {
+    const stored = localStorage.getItem(`chatHistory_${user?.id}`);
+    if (stored) setChat(JSON.parse(stored));
+  }, [user?.id]);
+
+  // Save chat per user to localStorage
+  useEffect(() => {
+    if (user?.id) {
+      localStorage.setItem(`chatHistory_${user.id}`, JSON.stringify(chat));
+    }
+  }, [chat, user?.id]);
+
+  const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user?._id || !user.salary || !userInput.trim()) return;
+    if (!input.trim() || !user?.id) return;
 
-    const newUserMessage = { role: "user", text: userInput };
-    setChatHistory((prev) => [...prev, newUserMessage]);
-    setUserInput("");
+    const time = formatTime();
+    const userMsg = { role: "user" as const, text: input, time };
+    setChat((prev) => [...prev, userMsg]);
+    setInput("");
     setLoading(true);
 
     try {
       let response;
-      for (const url of API_URLS) {
-        response = await fetch(url, {
+      for (const api of CHAT_APIS) {
+        response = await fetch(api, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            userId: user._id,
-            salary: user.salary,
-            message: userInput,
+            message: input,
+            userId: user.id,
           }),
         });
-
         if (response.ok) break;
       }
 
-      if (!response.ok) throw new Error(`Server error: ${response.status}`);
+      if (!response?.ok) throw new Error("All APIs failed");
 
       const data = await response.json();
-      setChatHistory((prev) => [
+      setChat((prev) => [
         ...prev,
-        { role: "ai", text: `🤖 AI Agent: Analyzing data...` },
-        { role: "ai", text: data.response || "🤖 No response from AI." },
+        {
+          role: "ai",
+          text: `🤖 ${data.response || "No response"}`,
+          time: formatTime(),
+        },
       ]);
-    } catch (error) {
-      console.error("❌ Error chatting with AI:", error);
-      setChatHistory((prev) => [
+    } catch {
+      setChat((prev) => [
         ...prev,
-        { role: "ai", text: "❌ AI is unavailable." },
+        {
+          role: "ai",
+          text: "❌ Unable to reach AI server.",
+          time: formatTime(),
+        },
       ]);
     } finally {
       setLoading(false);
@@ -135,63 +91,61 @@ const AIChat = () => {
   };
 
   return (
-    <div className="ai-chat-container">
-      <h2>💬 Financial AI Advisor</h2>
+    <>
+      {/* Toggle Button */}
+      <button
+        onClick={() => setShowChat(!showChat)}
+        className="fixed bottom-4 right-4 bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-full shadow-lg z-50"
+      >
+        <FiMessageCircle size={24} />
+      </button>
 
-      {financialAnalysis ? (
-        <div className="financial-analysis-box">
-          <h3>📊 Financial Insights</h3>
-          <p>
-            <strong>Investment Recommendation:</strong>{" "}
-            {financialAnalysis.investment_recommendation || "N/A"}
-          </p>
-          <p>
-            <strong>Behavior Analysis:</strong>{" "}
-            {financialAnalysis.survey_analysis?.financial_behavior.join(", ") ||
-              "N/A"}
-          </p>
-        </div>
-      ) : (
-        <p className="no-financial-analysis">❌ No financial analysis found.</p>
-      )}
-
-      {questionnaire ? (
-        <div className="questionnaire-box">
-          <h3>📋 Your Financial Profile</h3>
-          {Object.entries(questionnaire).map(([key, value]) => (
-            <p key={key}>
-              <strong>{key.replace(/_/g, " ").toUpperCase()}:</strong>{" "}
-              {value || "N/A"}
-            </p>
-          ))}
-        </div>
-      ) : (
-        <p className="no-questionnaire">❌ No questionnaire found.</p>
-      )}
-
-      <div className="chat-box">
-        {chatHistory.map((msg, index) => (
-          <div key={index} className={`message ${msg.role}-message`}>
-            <span dangerouslySetInnerHTML={{ __html: msg.text }} />
+      {/* Chat Box */}
+      {showChat && (
+        <div className="fixed bottom-20 right-4 bg-white shadow-xl rounded-lg w-80 max-h-[90vh] overflow-y-auto border border-gray-300 z-40 flex flex-col">
+          <div className="p-4 border-b">
+            <h2 className="text-lg font-bold">💬 Financial AI Advisor</h2>
           </div>
-        ))}
-        <div ref={chatEndRef} />
-      </div>
 
-      <form onSubmit={sendMessageToAI} className="chat-form">
-        <input
-          type="text"
-          value={userInput}
-          onChange={(e) => setUserInput(e.target.value)}
-          className="chat-input"
-          placeholder="Ask about investments..."
-          disabled={loading}
-        />
-        <button type="submit" className="chat-button" disabled={loading}>
-          {loading ? "⏳ Thinking..." : "Send"}
-        </button>
-      </form>
-    </div>
+          <div className="p-3 text-sm space-y-2 flex-1 overflow-y-auto">
+            {chat.map((msg, i) => (
+              <div
+                key={i}
+                className={`p-2 rounded-lg ${
+                  msg.role === "user"
+                    ? "bg-blue-100 text-blue-900 self-end"
+                    : "bg-gray-100 text-gray-800"
+                }`}
+              >
+                <ReactMarkdown>{msg.text}</ReactMarkdown>
+                <span className="block text-right text-[10px] text-gray-400">
+                  {msg.time}
+                </span>
+              </div>
+            ))}
+            <div ref={chatEndRef} />
+          </div>
+
+          {/* Chat Input */}
+          <form onSubmit={sendMessage} className="p-3 border-t flex gap-2">
+            <input
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              className="flex-1 p-2 border rounded text-sm"
+              placeholder="Ask a question..."
+              disabled={loading}
+            />
+            <button
+              type="submit"
+              disabled={loading}
+              className="bg-blue-600 text-white px-3 py-1 rounded text-sm"
+            >
+              {loading ? "..." : "Send"}
+            </button>
+          </form>
+        </div>
+      )}
+    </>
   );
 };
 

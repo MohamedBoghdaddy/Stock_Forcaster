@@ -7,15 +7,18 @@ import App from "./App.tsx";
 import { AppWrapper } from "./components/common/PageMeta.tsx";
 import { ThemeProvider } from "./context/ThemeContext.tsx";
 import { StockDataProvider } from "./context/StockDataContext.tsx";
+import { AuthProvider } from "./context/AuthContext.tsx";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <ThemeProvider>
       <AppWrapper>
         <StockDataProvider>
-        <App />
+          <AuthProvider>
+            <App />
+          </AuthProvider>
         </StockDataProvider>
       </AppWrapper>
     </ThemeProvider>
-  </StrictMode>,
+  </StrictMode>
 );
