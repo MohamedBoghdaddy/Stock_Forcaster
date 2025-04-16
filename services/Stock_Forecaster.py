@@ -1,143 +1,144 @@
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
-from typing import List
-from datetime import datetime
-import numpy as np
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Query, HTTPException
+from fastapi.responses import JSONResponse
 import pandas as pd
 import yfinance as yf
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error
 import joblib
 import os
+from datetime import datetime, timedelta
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import MinMaxScaler
 
 app = FastAPI()
 
-MODEL_PATH = "services/rf_model.pkl"
-SCALER_PATH = "services/rf_scaler.pkl"
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
+# Most famous stocks + FAANG
+symbols = [
+    "AAPL", "META", "AMZN", "NFLX", "GOOGL",  # FAANG
+    "MSFT", "TSLA", "NVDA", "BRK-B", "JPM",    # Top companies
+    "V", "JNJ", "WMT", "UNH", "PG"              # Diverse sectors
+]
 
-# === 🧠 FEATURE ENGINEERING ===
-def engineer_features(df):
+output_dir = "checkpoints"
+os.makedirs(output_dir, exist_ok=True)
+
+def train_and_save_model(symbol: str):
+    df = yf.download(symbol, start='2014-01-01', end=datetime.today().strftime('%Y-%m-%d'))
+    df = df[['Close']].copy().reset_index()
+    df.columns = ['Date', 'Close']
     df['SMA_50'] = df['Close'].rolling(window=50).mean()
     df['EMA_20'] = df['Close'].ewm(span=20, adjust=False).mean()
-    df['Return'] = df['Close'].pct_change()
-    df['Volatility'] = df['Return'].rolling(window=10).std()
+    df = df.dropna()
 
-    delta = df['Close'].diff()
-    gain = delta.where(delta > 0, 0).rolling(window=14).mean()
-    loss = -delta.where(delta < 0, 0).rolling(window=14).mean()
-    rs = gain / loss
-    df['RSI_14'] = 100 - (100 / (1 + rs))
+    scaler = MinMaxScaler()
+    df_scaled = scaler.fit_transform(df[['Close', 'SMA_50', 'EMA_20']])
+    X = df_scaled[:, 1:3]
+    y = df_scaled[:, 0]
 
-    ema12 = df['Close'].ewm(span=12, adjust=False).mean()
-    ema26 = df['Close'].ewm(span=26, adjust=False).mean()
-    df['MACD'] = ema12 - ema26
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X, y)
 
-    rolling_mean = df['Close'].rolling(window=20).mean()
-    rolling_std = df['Close'].rolling(window=20).std()
-    df['Bollinger_Upper'] = rolling_mean + 2 * rolling_std
-    df['Bollinger_Lower'] = rolling_mean - 2 * rolling_std
+    model_path = os.path.join(output_dir, f"{symbol}_rf_model.pkl")
+    scaler_path = os.path.join(output_dir, f"{symbol}_scaler.pkl")
+    predictions_path = os.path.join(output_dir, f"{symbol}_future_predictions.csv")
 
-    df.dropna(inplace=True)
-    for col in df.select_dtypes(include=[np.number]).columns:
-        df[col] = df[col].fillna(df[col].mean())
+    joblib.dump(model, model_path)
+    joblib.dump(scaler, scaler_path)
 
-    return df
+    # Predict future 15 days
+    future_dates = pd.date_range(datetime.today(), periods=15, freq='D')
+    last_row = df.iloc[-1]
+    latest_sma_50 = last_row['SMA_50']
+    latest_ema_20 = last_row['EMA_20']
 
+    predictions = []
+    for date in future_dates:
+        scaled_input = scaler.transform([[0, latest_sma_50, latest_ema_20]])[:, 1:3]
+        scaled_pred = model.predict(scaled_input)[0]
+        close_pred = scaler.inverse_transform([[scaled_pred, latest_sma_50, latest_ema_20]])[0][0]
+        predictions.append((date.strftime('%Y-%m-%d'), close_pred))
+        latest_ema_20 = (latest_ema_20 * 19 + close_pred) / 20
+        latest_sma_50 = (latest_sma_50 * 49 + close_pred) / 50
 
-# === 🏋️‍♂️ TRAIN FUNCTION ===
-def train_rf_model(df):
-    features = ['SMA_50', 'EMA_20', 'Volatility', 'RSI_14',
-                'MACD', 'Bollinger_Upper', 'Bollinger_Lower']
-    target = df['Close'].values
+    pred_df = pd.DataFrame(predictions, columns=['Date', 'Predicted Close'])
+    pred_df.to_csv(predictions_path, index=False)
+    print(f"✅ Model and predictions saved for {symbol}.")
 
-    test_size = int(0.2 * len(df))
-    train_size = len(df) - test_size
+# Train all symbols if not already trained
+for sym in symbols:
+    model_path = os.path.join(output_dir, f"{sym}_rf_model.pkl")
+    predictions_path = os.path.join(output_dir, f"{sym}_future_predictions.csv")
+    if not os.path.exists(model_path) or not os.path.exists(predictions_path):
+        train_and_save_model(sym)
 
-    scaler = StandardScaler()
-    x_scaled = scaler.fit_transform(df[features])
-    x_train, y_train = x_scaled[:train_size], target[:train_size]
+@app.get("/")
+def root():
+    return {"message": "Multi-stock Forecast API is running."}
 
-    model = RandomForestRegressor(
-        n_estimators=200,
-        max_depth=15,
-        min_samples_leaf=2,
-        max_features='sqrt',
-        random_state=42
-    )
-    model.fit(x_train, y_train)
-
-    # Save model & scaler
-    joblib.dump(model, MODEL_PATH)
-    joblib.dump(scaler, SCALER_PATH)
-    return True
-
-
-# === 🔍 PREDICT FUNCTION ===
-def predict_rf(df):
-    if not os.path.exists(MODEL_PATH) or not os.path.exists(SCALER_PATH):
-        raise FileNotFoundError("Model or Scaler not trained yet.")
-
-    features = ['SMA_50', 'EMA_20', 'Volatility', 'RSI_14',
-                'MACD', 'Bollinger_Upper', 'Bollinger_Lower']
-    target = df['Close'].values
-
-    test_size = int(0.2 * len(df))
-    train_size = len(df) - test_size
-    test_index = df.iloc[train_size:].index.strftime("%Y-%m-%d").tolist()
-
-    x = df[features]
-    scaler = joblib.load(SCALER_PATH)
-    model = joblib.load(MODEL_PATH)
-
-    x_scaled = scaler.transform(x)
-    x_test, y_test = x_scaled[train_size:], target[train_size:]
-    predictions = model.predict(x_test)
-
-    rmse = np.sqrt(mean_squared_error(y_test, predictions))
-
-    return {
-        "dates": test_index,
-        "actual": y_test.tolist(),
-        "predicted": predictions.tolist(),
-        "rmse": rmse
-    }
-
-
-# === 🔁 TRAIN ENDPOINT ===
-@app.post("/train_rf")
-def train_rf(
-    symbol: str = Query(..., description="Stock symbol like AAPL"),
-    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
-    end_date: str = Query(..., description="End date (YYYY-MM-DD)")
-):
+@app.get("/predict")
+def get_predictions(symbol: str = Query("AAPL")):
     try:
-        df = yf.download(symbol, start=start_date, end=end_date, threads=True)
-        if df.empty:
-            raise HTTPException(status_code=404, detail="No data fetched")
-        df = engineer_features(df)
-        train_rf_model(df)
-        return {"message": "Model trained and saved successfully"}
+        predictions_path = os.path.join(output_dir, f"{symbol}_future_predictions.csv")
+        df = pd.read_csv(predictions_path)
+        return {
+            "symbol": symbol,
+            "dates": df["Date"].tolist(),
+            "predicted": df["Predicted Close"].tolist(),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# === 📈 PREDICT ENDPOINT ===
-@app.get("/predict_rf")
-def predict_rf_api(
-    symbol: str = Query(..., description="Stock symbol like AAPL"),
-    start_date: str = Query(..., description="Start date (YYYY-MM-DD)"),
-    end_date: str = Query(..., description="End date (YYYY-MM-DD)")
+@app.get("/historical")
+def get_historical(
+    period: str = Query("1y", enum=["5y", "3y", "1y", "6mo", "3mo", "1mo", "7d", "1d"]),
+    symbol: str = Query("AAPL")
 ):
     try:
-        df = yf.download(symbol, start=start_date, end=end_date, threads=True)
+        end_date = datetime.today()
+        period_map = {
+            "5y": end_date - timedelta(days=5 * 365),
+            "3y": end_date - timedelta(days=3 * 365),
+            "1y": end_date - timedelta(days=365),
+            "6mo": end_date - timedelta(days=180),
+            "3mo": end_date - timedelta(days=90),
+            "1mo": end_date - timedelta(days=30),
+            "7d": end_date - timedelta(days=7),
+            "1d": end_date - timedelta(days=1),
+        }
+
+        start_date = period_map[period]
+        df = yf.download(symbol, start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
+
         if df.empty:
-            raise HTTPException(status_code=404, detail="No data fetched")
-        df = engineer_features(df)
-        result = predict_rf(df)
-        return {"symbol": symbol, **result}
-    except FileNotFoundError as fnf:
-        raise HTTPException(status_code=400, detail=str(fnf))
+            return {"symbol": symbol, "data": []}
+
+        df = df[['Close']].reset_index()
+        df.columns = ['Date', 'Close']
+        df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+        return {"symbol": symbol, "data": df.to_dict(orient="records")}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/metrics")
+def get_model_metrics(symbol: str = Query("AAPL")):
+    try:
+        model_path = os.path.join(output_dir, f"{symbol}_rf_model.pkl")
+        scaler_path = os.path.join(output_dir, f"{symbol}_scaler.pkl")
+        model = joblib.load(model_path)
+        scaler = joblib.load(scaler_path)
+        return {
+            "model": f"Random Forest - {symbol}",
+            "n_estimators": model.n_estimators,
+            "max_depth": model.max_depth,
+            "features_range": scaler.feature_range,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
