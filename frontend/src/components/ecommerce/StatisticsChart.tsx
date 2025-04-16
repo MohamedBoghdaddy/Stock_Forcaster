@@ -120,7 +120,7 @@ export default function StatisticsChart() {
     },
     dataLabels: { enabled: false },
     tooltip: {
-      x: { format: "dd MMM yyyy HH:mm" },
+      x: { format: "d M yy H:m" },
       y: { formatter: (val: number) => val.toFixed(2) },
     },
     xaxis: {
