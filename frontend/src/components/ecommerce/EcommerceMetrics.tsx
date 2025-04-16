@@ -47,7 +47,7 @@ export default function StockMetrics() {
       for (const symbol of trackedStocks) {
         try {
           const res = await axios.get("http://localhost:8000/historical", {
-            params: { symbol, period: "7d" },
+            params: { symbol, period: "1d" },
           });
 
           const data: { Close?: number; close?: number }[] = res.data.data;
