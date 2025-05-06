@@ -39,14 +39,16 @@ interface StockMetric {
 
 export default function StockMetrics() {
   const [metrics, setMetrics] = useState<Record<string, StockMetric>>({});
+  const [loading, setLoading] = useState<boolean>(true);
 
   useEffect(() => {
     const fetchStockData = async () => {
       const results: Record<string, StockMetric> = {};
+      setLoading(true);
 
       for (const symbol of trackedStocks) {
         try {
-          const res = await axios.get("http://localhost:8000/historical", {
+          const res = await axios.get("http://localhost:5001/historical", {
             params: { symbol, period: "1d" },
           });
 
@@ -70,10 +72,20 @@ export default function StockMetrics() {
       }
 
       setMetrics(results);
+      setLoading(false);
     };
 
     fetchStockData();
+
+    // Set an interval to refresh the stock data every 60 seconds
+    const interval = setInterval(fetchStockData, 60000);
+
+    return () => clearInterval(interval); // Clean up the interval on component unmount
   }, []);
+
+  if (loading) {
+    return <div>Loading...</div>; // Loading state
+  }
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
@@ -84,12 +96,14 @@ export default function StockMetrics() {
         >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              {stockIcons[symbol] && (
+              {stockIcons[symbol] ? (
                 <img
                   src={stockIcons[symbol]}
                   alt={`${symbol} logo`}
                   className="w-6 h-6"
                 />
+              ) : (
+                <div className="w-6 h-6 bg-gray-200 rounded-full" /> // Fallback for missing logos
               )}
               <h4 className="text-sm text-gray-500 dark:text-gray-400">
                 {symbol}

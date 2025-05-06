@@ -1,140 +1,50 @@
-import axios from "axios";
-import ChatModel from "../models/ChatModel.js";
-import dotenv from "dotenv";
-import Sentiment from "sentiment";
-import fs from "fs";
-import path from "path";
-import csv from "csv-parser";
+import fetch from "node-fetch"; // Use node-fetch for making requests
+import jwt from "jsonwebtoken";
 
-dotenv.config();
-const sentiment = new Sentiment();
-const checkpointsDir = path.resolve("checkpoints");
+// API URL pointing to the Python backend that interacts with Gemini AI
+const apiUrl = "http://localhost:5001/chat"; // Python API for Gemini response
 
-// FAQ responses
-const faqs = {
-  "how to save money": "💰 Save 20% of your income and avoid impulse buying.",
-  "how to invest": "📊 Diversify your portfolio using index funds.",
-};
-
-// Financial tips
-const tips = [
-  "📈 Invest for the long-term.",
-  "💳 Avoid unnecessary credit card debt.",
-  "📉 Track your expenses weekly.",
-  "📊 Rebalance your portfolio yearly.",
-];
-
-// Helper: Get stock price on a specific date
-export const getStockPriceByDate = async (symbol, date) => {
-  const file = path.join(checkpointsDir, `${symbol}_future_predictions.csv`);
-  if (!fs.existsSync(file)) return `❌ No data found for ${symbol}`;
-
-  return new Promise((resolve, reject) => {
-    const results = [];
-    fs.createReadStream(file)
-      .pipe(csv())
-      .on("data", (row) => {
-        if (row.Date === date) results.push(row);
-      })
-      .on("end", () => {
-        if (results.length === 0)
-          return resolve(`❌ No prediction for ${symbol} on ${date}`);
-        resolve(
-          `📅 Price for ${symbol} on ${date}: **$${parseFloat(
-            results[0]["Predicted Close"]
-          ).toFixed(2)}**`
-        );
-      })
-      .on("error", () => resolve("⚠️ Error reading prediction file."));
-  });
-};
-
-// Helper: Predict stock price in N days
-export const getStockPredictionByDate = async (symbol, days) => {
-  const file = path.join(checkpointsDir, `${symbol}_future_predictions.csv`);
-  if (!fs.existsSync(file)) return `❌ No data found for ${symbol}`;
-
-  return new Promise((resolve, reject) => {
-    const rows = [];
-    fs.createReadStream(file)
-      .pipe(csv())
-      .on("data", (row) => rows.push(row))
-      .on("end", () => {
-        const index = days - 1;
-        if (index >= rows.length)
-          return resolve(`❌ No prediction ${days} days ahead for ${symbol}`);
-        const prediction = rows[index];
-        resolve(
-          `🔮 Predicted price for ${symbol} in ${days} days (${
-            prediction.Date
-          }): **$${parseFloat(prediction["Predicted Close"]).toFixed(2)}**`
-        );
-      })
-      .on("error", () => resolve("⚠️ Error reading prediction file."));
-  });
-};
-
-// ✅ Main chatbot handler
-export const handleChatRequest = async (req, res) => {
+// Chat Controller
+export const sendChatMessage = async (req, res) => {
   const { message } = req.body;
-  const userId = req.user?._id || null;
 
-  if (!message)
-    return res.status(400).json({ response: "Message is required." });
+  // Verify JWT
+  const token = req.headers["authorization"];
+  if (!token) return res.status(401).send("No token provided");
 
-  let responseText = "";
-  const lowerMessage = message.toLowerCase();
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log("User authenticated: ", decoded.username);
 
-  // FAQs
-  if (faqs[lowerMessage]) return res.json({ response: faqs[lowerMessage] });
-
-  // Sentiment
-  const analysis = sentiment.analyze(message);
-  const mood =
-    analysis.score > 0
-      ? "😊 Positive"
-      : analysis.score < 0
-      ? "😞 Negative"
-      : "😐 Neutral";
-  responseText += `🧠 Sentiment: ${mood}`;
-
-  let matched = false;
-
-  // Match: "stock price of AAPL on 2024-04-25"
-  const priceRegex = /stock price of (\w+) on (\d{4}-\d{2}-\d{2})/;
-  const priceMatch = lowerMessage.match(priceRegex);
-  if (priceMatch) {
-    const [, symbol, date] = priceMatch;
-    const price = await getStockPriceByDate(symbol.toUpperCase(), date);
-    responseText += `\n${price}`;
-    matched = true;
+    // Get Gemini response from Python API
+    const response = await getGeminiResponse(message);
+    return res.json({ reply: response });
+  } catch (e) {
+    console.error("Error during authentication or processing:", e);
+    return res.status(500).send("Authentication failed or error in processing");
   }
-
-  // Match: "predict AAPL in 10 days"
-  const predictionRegex = /predict (\w+) in (\d{1,2}) days?/;
-  const predMatch = lowerMessage.match(predictionRegex);
-  if (predMatch) {
-    const [, symbol, days] = predMatch;
-    const pred = await getStockPredictionByDate(
-      symbol.toUpperCase(),
-      parseInt(days)
-    );
-    responseText += `\n${pred}`;
-    matched = true;
-  }
-
-  // If no match, give a tip
-  if (!matched) {
-    const tip = tips[Math.floor(Math.random() * tips.length)];
-    responseText += `\n💡 Financial Tip: ${tip}`;
-  }
-
-  // Save chat
-  await new ChatModel({
-    userId,
-    message,
-    response: responseText,
-  }).save();
-
-  res.json({ response: responseText });
 };
+
+// Function to get Gemini response from the Python backend
+async function getGeminiResponse(prompt) {
+  try {
+    // Make a POST request to the Python backend
+    const response = await fetch(apiUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ message: prompt }), // Send user message to Gemini service
+    });
+
+    if (!response.ok) {
+      throw new Error("Failed to get a response from the Gemini service");
+    }
+
+    const data = await response.json();
+    return data.reply; // Return the reply from Gemini API
+  } catch (e) {
+    console.error("Error communicating with the Gemini service:", e);
+    return "Error communicating with the Gemini service"; // Return a fallback error message
+  }
+}

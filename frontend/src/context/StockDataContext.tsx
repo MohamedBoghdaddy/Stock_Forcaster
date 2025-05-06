@@ -57,7 +57,7 @@ export const StockDataProvider = ({ children }: ProviderProps) => {
     setLoading(true);
     try {
       const res = await axios.get<HistoricalRecord[]>(
-        `http://localhost:8000/historical?period=${period}`
+        `http://localhost:5001/historical?period=${period}`
       );
       setHistoricalData(res.data);
       setError(null);
@@ -71,7 +71,7 @@ export const StockDataProvider = ({ children }: ProviderProps) => {
   const fetchFuturePredictions = async () => {
     try {
       const res = await axios.get<FuturePrediction[]>(
-        "http://localhost:8000/predict"
+        "http://localhost:5001/predict"
       );
       setFuturePredictions(res.data);
     } catch {
