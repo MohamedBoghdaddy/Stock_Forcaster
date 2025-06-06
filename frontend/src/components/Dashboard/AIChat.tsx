@@ -1,11 +1,22 @@
-import React, { useState, useEffect, useRef } from "react";
-import {  FaStopCircle, FaCopy, FaLanguage } from "react-icons/fa";
+import { useState, useEffect, useRef, useCallback, FormEvent } from "react";
+import { FaStopCircle, FaCopy, FaLanguage } from "react-icons/fa";
 import axios from "axios";
-import { useAuthContext } from "../../hooks/useAuthContext";
 import ReactMarkdown from "react-markdown";
 import Select from "react-select";
+import { ErrorBoundary } from "react-error-boundary";
 
-const API_BASE_URL = "http://localhost:8000"; // Base URL without endpoint
+type Message = {
+  role: "user" | "ai";
+  text: string;
+  time: string;
+};
+
+const fallbackUrl =
+  window.location.hostname === "localhost"
+    ? "http://localhost:8000"
+    : "http://127.0.0.1:8000";
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || fallbackUrl;
 
 const languageOptions = [
   { label: "Arabic", value: "ar" },
@@ -15,139 +26,112 @@ const languageOptions = [
   { label: "Hindi", value: "hi" },
 ];
 
-type Message = {
-  role: "user" | "ai";
-  text: string;
-  time: string;
+const useSpeech = () => {
+  const synth = useRef<SpeechSynthesis | null>(null);
+  useEffect(() => {
+    if ("speechSynthesis" in window) {
+      synth.current = window.speechSynthesis;
+    }
+    return () => synth.current?.cancel();
+  }, []);
+
+  const speak = useCallback((text: string) => {
+    if (!synth.current) return;
+    synth.current.cancel();
+    const utterance = new SpeechSynthesisUtterance(text.slice(0, 200));
+    utterance.lang = "en-US";
+    synth.current.speak(utterance);
+  }, []);
+
+  const stop = useCallback(() => synth.current?.cancel(), []);
+  return { speak, stop };
 };
 
-const AIChat = () => {
-  const { state } = useAuthContext();
-  const { user } = state;
+const MessageBubble = ({
+  msg,
+  onCopy,
+  onTranslate,
+}: {
+  msg: Message;
+  onCopy: (text: string) => void;
+  onTranslate: (text: string) => void;
+}) => (
+  <div
+    className={`p-2 rounded-lg ${
+      msg.role === "user"
+        ? "bg-blue-100 text-blue-900 self-end"
+        : "bg-gray-100 text-gray-800"
+    }`}
+  >
+    <ReactMarkdown>{msg.text}</ReactMarkdown>
+    <div className="flex justify-between items-center mt-1">
+      <span className="text-[10px] text-gray-400">{msg.time}</span>
+      {msg.role === "ai" && (
+        <div className="flex space-x-2">
+          <button onClick={() => onCopy(msg.text)} aria-label="Copy message">
+            <FaCopy size={12} />
+          </button>
+          <button
+            onClick={() => onTranslate(msg.text)}
+            aria-label="Translate message"
+          >
+            <FaLanguage size={12} />
+          </button>
+        </div>
+      )}
+    </div>
+  </div>
+);
 
+const ErrorFallback = () => (
+  <div className="p-4 bg-red-100 text-red-800 rounded-lg">
+    Something went wrong. Please refresh the page.
+  </div>
+);
+
+const AIChat = () => {
   const [input, setInput] = useState("");
   const [chat, setChat] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
   const [showChat, setShowChat] = useState(true);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  const [isTyping, setIsTyping] = useState(false);
   const [selectedLanguage, setSelectedLanguage] = useState(languageOptions[0]);
-  const [isRecording, setIsRecording] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
   const [dots, setDots] = useState("");
-  const speechSynth = useRef<SpeechSynthesis | null>(null);
-
-  useEffect(() => {
-    speechSynth.current = window.speechSynthesis;
-    return () => {
-      if (speechSynth.current) {
-        speechSynth.current.cancel();
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    let dotInterval: NodeJS.Timeout;
-    if (isTyping) {
-      let dotCount = 0;
-      dotInterval = setInterval(() => {
-        setDots(".".repeat((dotCount % 3) + 1));
-        dotCount++;
-      }, 500);
-    }
-    return () => clearInterval(dotInterval);
-  }, [isTyping]);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const { speak, stop } = useSpeech();
 
   const formatTime = () =>
     new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const savedChat = localStorage.getItem("aiChatHistory");
+    if (savedChat) setChat(JSON.parse(savedChat));
+  }, []);
+
+  useEffect(() => {
+    if (chat.length)
+      localStorage.setItem("aiChatHistory", JSON.stringify(chat));
   }, [chat]);
 
-const sendMessage = async (e: React.FormEvent) => {
-  e.preventDefault();
-  if (!input.trim()) return;
-
-  const userMsg: Message = { role: "user", text: input, time: formatTime() };
-  setChat((prev) => [...prev, userMsg]);
-  setInput("");
-  setLoading(true);
-  setIsTyping(true);
-
-  try {
-    // First check if the API is reachable
-    const healthCheck = await axios.get(`${API_BASE_URL}/api/health`);
-    if (healthCheck.status !== 200) {
-      throw new Error("API server not responding");
+  useEffect(() => {
+    if (isTyping) {
+      let dotCount = 0;
+      const interval = setInterval(() => {
+        setDots(".".repeat((dotCount % 3) + 1));
+        dotCount++;
+      }, 500);
+      return () => clearInterval(interval);
     }
+  }, [isTyping]);
 
-    // Then make the chat request
-    const response = await axios.post(
-      `${API_BASE_URL}/api/chat`,
-      {
-        message: input,
-        userId: user?.id,
-      },
-      {
-        headers: {
-          "Content-Type": "application/json",
-        },
-        timeout: 10000, // 10 second timeout
-      }
-    );
-
-    const aiMsg: Message = {
-      role: "ai",
-      text: `🤖 ${response.data?.reply || "No response"}`,
-      time: formatTime(),
-    };
-    setChat((prev) => [...prev, aiMsg]);
-    speak(aiMsg.text);
-  } catch (error) {
-    console.error("API Error:", error);
-    let errorMessage = "❌ Error connecting to AI service";
-
-    if (axios.isAxiosError(error)) {
-      if (error.response) {
-        errorMessage = `❌ Server error: ${error.response.status}`;
-      } else if (error.request) {
-        errorMessage = "❌ No response from server";
-      } else {
-        errorMessage = `❌ Request error: ${error.message}`;
-      }
-    }
-
-    const errorMsg: Message = {
-      role: "ai",
-      text: errorMessage,
-      time: formatTime(),
-    };
-    setChat((prev) => [...prev, errorMsg]);
-  } finally {
-    setLoading(false);
-    setIsTyping(false);
-  }
-};
-
-  const speak = (text: string) => {
-    if (!speechSynth.current) return;
-
-    speechSynth.current.cancel();
-    const utterance = new SpeechSynthesisUtterance();
-    utterance.text = text.length > 200 ? `${text.substring(0, 200)}...` : text;
-    utterance.lang = "en-US";
-    utterance.pitch = 1.0;
-    speechSynth.current.speak(utterance);
-  };
-
-  const stopSpeaking = () => {
-    speechSynth.current?.cancel();
-  };
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chat]);
 
   const copyToClipboard = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      alert("Copied to clipboard!");
+      alert("Copied!");
     } catch (err) {
       console.error("Copy failed:", err);
     }
@@ -155,47 +139,89 @@ const sendMessage = async (e: React.FormEvent) => {
 
   const translateMessage = async (text: string) => {
     try {
-      const response = await axios.post(
-        `${API_BASE_URL}/api/translate`,
+      const res = await axios.post(
+        `${API_BASE_URL}/chatbot/translate`,
         {
           text,
-          langCode: selectedLanguage.value,
+          langCode: selectedLanguage.value.toLowerCase(),
         },
         {
-          headers: {
-            "Content-Type": "application/json",
-          },
+          headers: { "Content-Type": "application/json" },
         }
       );
-
-      const translatedMsg: Message = {
-        role: "ai",
-        text: `🌍 ${selectedLanguage.label}: ${response.data.translatedText}`,
-        time: formatTime(),
-      };
-      setChat((prev) => [...prev, translatedMsg]);
-    } catch (error) {
-      console.error("Translation error:", error);
-      const errorMsg: Message = {
-        role: "ai",
-        text: "❌ Translation service unavailable",
-        time: formatTime(),
-      };
-      setChat((prev) => [...prev, errorMsg]);
+      setChat((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          text: `🌍 ${selectedLanguage.label}: ${res.data.translatedText}`,
+          time: formatTime(),
+        },
+      ]);
+    } catch {
+      setChat((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          text: "❌ Translation service unavailable",
+          time: formatTime(),
+        },
+      ]);
     }
   };
 
-  // ... (rest of the component remains the same)
+  const sendMessage = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!input.trim()) return;
+
+    setChat((prev) => [
+      ...prev,
+      { role: "user", text: input, time: formatTime() },
+    ]);
+    setInput("");
+    setLoading(true);
+    setIsTyping(true);
+
+    try {
+      await axios.get(`${API_BASE_URL}/chatbot/health`);
+
+      const res = await axios.post(
+        `${API_BASE_URL}/chatbot/chat`,
+        { message: input },
+        { headers: { "Content-Type": "application/json" }, timeout: 10000 }
+      );
+
+      const reply = res.data?.reply || res.data?.output || "🤖 No response.";
+      setChat((prev) => [
+        ...prev,
+        { role: "ai", text: `🤖 ${reply}`, time: formatTime() },
+      ]);
+      speak(reply);
+    } catch (err) {
+      console.error("Error:", err);
+      setChat((prev) => [
+        ...prev,
+        {
+          role: "ai",
+          text: "❌ Server error or network issue",
+          time: formatTime(),
+        },
+      ]);
+    } finally {
+      setLoading(false);
+      setIsTyping(false);
+    }
+  };
+
   return (
-    <>
+    <ErrorBoundary FallbackComponent={ErrorFallback}>
       {showChat && (
-        <div className="fixed bottom-20 right-4 bg-white shadow-xl rounded-lg w-80 max-h-[90vh] overflow-y-auto border border-gray-300 z-40 flex flex-col">
+        <div className="fixed bottom-20 right-4 bg-white shadow-lg rounded-lg w-80 max-h-[90vh] overflow-y-auto border z-40 flex flex-col">
           <div className="p-4 border-b flex justify-between items-center">
             <h2 className="text-lg font-bold">💬 Financial AI Advisor</h2>
             <Select
               options={languageOptions}
               value={selectedLanguage}
-              onChange={(option) => option && setSelectedLanguage(option)}
+              onChange={(o) => o && setSelectedLanguage(o)}
               className="w-32"
               classNamePrefix="select"
               isSearchable={false}
@@ -204,29 +230,12 @@ const sendMessage = async (e: React.FormEvent) => {
 
           <div className="p-3 text-sm space-y-2 flex-1 overflow-y-auto">
             {chat.map((msg, i) => (
-              <div
-                key={i}
-                className={`p-2 rounded-lg ${
-                  msg.role === "user"
-                    ? "bg-blue-100 text-blue-900 self-end"
-                    : "bg-gray-100 text-gray-800"
-                }`}
-              >
-                <ReactMarkdown>{msg.text}</ReactMarkdown>
-                <div className="flex justify-between items-center mt-1">
-                  <span className="text-[10px] text-gray-400">{msg.time}</span>
-                  {msg.role === "ai" && (
-                    <div className="flex space-x-2">
-                      <button onClick={() => copyToClipboard(msg.text)}>
-                        <FaCopy size={12} />
-                      </button>
-                      <button onClick={() => translateMessage(msg.text)}>
-                        <FaLanguage size={12} />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
+              <MessageBubble
+                key={`${msg.role}-${i}`}
+                msg={msg}
+                onCopy={copyToClipboard}
+                onTranslate={translateMessage}
+              />
             ))}
             {isTyping && (
               <div className="bg-gray-100 text-gray-800 p-2 rounded-lg">
@@ -263,13 +272,13 @@ const sendMessage = async (e: React.FormEvent) => {
           {showChat ? "👁️" : "💬"}
         </button>
         <button
-          onClick={stopSpeaking}
+          onClick={stop}
           className="bg-gray-600 p-3 rounded-full text-white"
         >
           <FaStopCircle size={18} />
         </button>
       </div>
-    </>
+    </ErrorBoundary>
   );
 };
 

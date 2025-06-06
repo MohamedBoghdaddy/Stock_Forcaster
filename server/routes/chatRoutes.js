@@ -1,10 +1,14 @@
-// routes/chatRoutes.js
 import express from "express";
-import { sendChatMessage } from "../controllers/chatController.js";
+import {
+  askGemini,
+  translateText,
+  healthCheck,
+} from "../controller/chatbotController.js";
 
 const router = express.Router();
 
-// Route for sending a chat message
-router.post("/chat", sendChatMessage);
+router.get("/health", healthCheck); // GET /api/health
+router.post("/chat", askGemini); // POST /api/chat
+router.post("/translate", translateText); // POST /api/translate
 
 export default router;
