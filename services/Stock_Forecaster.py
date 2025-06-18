@@ -26,7 +26,7 @@ app.add_middleware(
 
 symbols = [
     "AAPL", "META", "AMZN", "NFLX", "GOOGL",
-    "MSFT", "TSLA", "NVDA", "BRK-B", "JPM",
+    "MSFT", "TSLA", "NVDA", "JPM",
     "V", "JNJ", "WMT", "UNH", "PG"
 ]
 
