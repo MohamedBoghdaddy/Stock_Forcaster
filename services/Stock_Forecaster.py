@@ -1,4 +1,4 @@
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.cors import CORSMiddleware 
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.responses import JSONResponse
 import pandas as pd
@@ -8,6 +8,11 @@ import os
 from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import MinMaxScaler
+import requests
+
+# === API Keys ===
+TWELVE_DATA_API_KEY = os.getenv("TWELVE_API_KEY", "demo")
+ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_API_KEY", "demo")
 
 app = FastAPI()
 
@@ -28,9 +33,45 @@ symbols = [
 output_dir = "checkpoints"
 os.makedirs(output_dir, exist_ok=True)
 
+
+def fetch_fallback_stock_data(symbol: str, start: str, end: str):
+    try:
+        twelve_url = (
+            f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=1day"
+            f"&start_date={start}&end_date={end}&apikey={TWELVE_DATA_API_KEY}&format=JSON"
+        )
+        res = requests.get(twelve_url)
+        if res.ok:
+            json_data = res.json()
+            if "values" in json_data:
+                df = pd.DataFrame(json_data["values"])
+                df["Date"] = pd.to_datetime(df["datetime"]).dt.strftime("%Y-%m-%d")
+                df["Close"] = df["close"].astype(float)
+                return df[["Date", "Close"]].sort_values("Date")
+
+        alpha_url = (
+            f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}"
+            f"&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}"
+        )
+        res = requests.get(alpha_url)
+        if res.ok:
+            json_data = res.json().get("Time Series (Daily)", {})
+            if json_data:
+                records = [
+                    {"Date": date, "Close": float(day["4. close"])}
+                    for date, day in json_data.items()
+                    if start <= date <= end
+                ]
+                return pd.DataFrame(records).sort_values("Date")
+    except Exception as e:
+        print("❌ Fallback failed:", str(e))
+        return None
+    return None
+
+
 def train_and_save_model(symbol: str):
     try:
-        yf_symbol = symbol.replace("-", ".")  # e.g. BRK-B → BRK.B
+        yf_symbol = symbol.replace("-", ".")
         df = yf.download(yf_symbol, start='2014-01-01', end=datetime.today().strftime('%Y-%m-%d'))
 
         if df.empty or 'Close' not in df.columns:
@@ -58,7 +99,6 @@ def train_and_save_model(symbol: str):
         joblib.dump(model, os.path.join(output_dir, f"{symbol}_rf_model.pkl"))
         joblib.dump(scaler, os.path.join(output_dir, f"{symbol}_scaler.pkl"))
 
-        # Predict future 15 days
         future_dates = pd.date_range(datetime.today(), periods=15, freq='D')
         last_row = df.iloc[-1]
         latest_sma_50 = last_row['SMA_50']
@@ -74,23 +114,25 @@ def train_and_save_model(symbol: str):
             latest_sma_50 = (latest_sma_50 * 49 + close_pred) / 50
 
         pd.DataFrame(predictions, columns=['Date', 'Predicted Close'])\
-          .to_csv(os.path.join(output_dir, f"{symbol}_future_predictions.csv"), index=False)
+            .to_csv(os.path.join(output_dir, f"{symbol}_future_predictions.csv"), index=False)
 
         print(f"✅ Model and predictions saved for {symbol}")
-
     except Exception as e:
         print(f"❌ Error processing {symbol}: {str(e)}")
 
-# Train all models
+
+# Train models if not already saved
 for sym in symbols:
     model_path = os.path.join(output_dir, f"{sym}_rf_model.pkl")
     pred_path = os.path.join(output_dir, f"{sym}_future_predictions.csv")
     if not os.path.exists(model_path) or not os.path.exists(pred_path):
         train_and_save_model(sym)
 
+
 @app.get("/")
 def root():
     return {"message": "✅ Multi-stock Forecast API is running."}
+
 
 @app.get("/predict")
 def get_predictions(symbol: str = Query("AAPL")):
@@ -104,6 +146,7 @@ def get_predictions(symbol: str = Query("AAPL")):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction error: {str(e)}")
+
 
 @app.get("/historical")
 def get_historical(
@@ -127,18 +170,22 @@ def get_historical(
         df = yf.download(symbol, start=start_date.strftime('%Y-%m-%d'), end=end_date.strftime('%Y-%m-%d'))
 
         if df.empty:
-            raise HTTPException(status_code=404, detail=f"No data for {symbol} in period {period}")
-
-        df = df[['Close']].reset_index()
-        df.columns = ['Date', 'Close']
-        df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
+            fallback_df = fetch_fallback_stock_data(symbol, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'))
+            if fallback_df is None or fallback_df.empty:
+                raise HTTPException(status_code=404, detail=f"No data for {symbol} in period {period} from any source")
+            df = fallback_df
+        else:
+            df = df[['Close']].reset_index()
+            df.columns = ['Date', 'Close']
+            df['Date'] = pd.to_datetime(df['Date']).dt.strftime('%Y-%m-%d')
 
         if period == "1d":
             df = df.tail(2)
 
         return {"symbol": symbol, "data": df.to_dict(orient="records")}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"Historical fetch error: {str(e)}")
+
 
 @app.get("/metrics")
 def get_model_metrics(symbol: str = Query("AAPL")):

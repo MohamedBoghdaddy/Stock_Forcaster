@@ -51,7 +51,7 @@ export default function StatisticsChart() {
   const fetchData = async (period: string, symbol: string): Promise<void> => {
     try {
       if (period === "predict") {
-        const predRes = await axios.get("http://localhost:8000/predict", {
+        const predRes = await axios.get("http://localhost:8000/stock/predict", {
           params: { symbol },
         });
         const predData: PredictionResponse = predRes.data;
@@ -64,7 +64,7 @@ export default function StatisticsChart() {
         setCategories(predData.dates);
         setData(predData.predicted);
       } else {
-        const histRes = await axios.get("http://localhost:8000/historical", {
+        const histRes = await axios.get("http://localhost:8000/stock/historical", {
           params: { symbol, period },
         });
 
