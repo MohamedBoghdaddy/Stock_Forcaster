@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, HTTPException, FastAPI, Depends
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,8 +11,7 @@ import logging
 import hashlib
 import asyncio
 import pandas as pd
-import yfinance as yf
-import requests
+import httpx
 import glob
 import time
 from cachetools import TTLCache
@@ -24,10 +23,10 @@ from scipy.stats import linregress
 load_dotenv()
 
 # === Setup ===
-app = FastAPI()
+app = FastAPI(title="Stock Forecaster API", version="1.1.0")
 print("✅ FastAPI application initialized")
 
-# CORS
+# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,13 +35,40 @@ app.add_middleware(
 )
 print("🔒 CORS middleware configured")
 
+# API Configuration
+PREFERRED_API_ORDER = [
+    "twelve_data",
+    "marketstack",
+    "alpha_vantage"
+]
+
+APIS = {
+    "alpha_vantage": os.getenv("ALPHA_VANTAGE_API_KEY"),
+    "finnhub": os.getenv("FINNHUB_API_KEY"),
+    "marketstack": os.getenv("MARKETSTACK_API_KEY"),
+    "twelve_data": os.getenv("TWELVE_DATA_API_KEY"),
+    "binance": {
+        "key": os.getenv("BINANCE_API_KEY"),
+        "secret": os.getenv("BINANCE_SECRET_KEY")
+    },
+    "mediastack": os.getenv("MEDIASTACK_API_KEY"),
+}
+
 # Initialize Gemini
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-model = genai.GenerativeModel("gemini-1.5-flash")
-print("🧠 Gemini model initialized")
+print("🧠 Configuring Gemini model...")
+try:
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    print("✅ Gemini configured successfully")
+except Exception as e:
+    print(f"❌ Gemini configuration failed: {str(e)}")
+    raise RuntimeError("Gemini initialization failed")
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 print("📝 Logging configured")
 
@@ -57,21 +83,7 @@ SESSION_HISTORY = TTLCache(maxsize=1000, ttl=3600)  # 1-hour session cache
 SESSION_LOCK = asyncio.Lock()
 print("🔐 Session management initialized")
 
-# Financial data APIs
-APIS = {
-    "alpha_vantage": os.getenv("ALPHA_VANTAGE_API_KEY"),
-    "finnhub": os.getenv("FINNHUB_API_KEY"),
-    "marketstack": os.getenv("MARKETSTACK_API_KEY"),
-    "twelve_data": os.getenv("TWELVE_DATA_API_KEY"),  # Added Twelve Data
-    "binance": {
-        "key": os.getenv("BINANCE_API_KEY"),
-        "secret": os.getenv("BINANCE_SECRET_KEY")
-    },
-    "mediastack": os.getenv("MEDIASTACK_API_KEY"),
-}
-print("🔌 Financial APIs configured")
-
-# Risk categories and stock recommendations
+# Financial knowledge base
 RISK_CATEGORIES = {
     "conservative": {
         "stocks": ["JNJ", "PG", "KO", "PEP", "WMT", "MCD", "T", "VZ", "SO", "DUK"],
@@ -99,7 +111,6 @@ RISK_CATEGORIES = {
     }
 }
 
-# Financial tips and FAQs
 FINANCIAL_TIPS = [
     "💰 Save at least 20% of your income each month.",
     "📉 Avoid impulse buying by waiting 24 hours before making a purchase.",
@@ -127,74 +138,207 @@ FAQS = {
 print("💡 Financial knowledge base loaded")
 
 # === Helper Functions ===
-def get_stock_data(symbol: str) -> dict:
-    """Fetch stock data with caching"""
-    if symbol in STOCK_DATA_CACHE:
-        return STOCK_DATA_CACHE[symbol]
+async def fetch_twelve_data(symbol: str, days: int) -> dict:
+    """Fetch data from Twelve Data API"""
+    api_key = APIS.get("twelve_data")
+    if not api_key:
+        return None
+        
+    print(f"📈 Using Twelve Data for {symbol}")
+    params = {
+        "symbol": symbol,
+        "interval": "1day",
+        "outputsize": days,
+        "apikey": api_key
+    }
     
     try:
-        print(f"📊 Fetching stock data for {symbol}")
-        stock = yf.Ticker(symbol)
-        info = stock.info
-        company_name = info.get('shortName', symbol)
-        df = yf.download(symbol, period="30d")
-        if df.empty:
-            print(f"⚠️ No data found for {symbol}")
-            return {}
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://api.twelvedata.com/time_series",
+                params=params,
+                timeout=10
+            )
+            data = response.json()
+            
+        if "values" not in data:
+            return None
+            
+        # Process data into consistent format
+        closes = [float(item["close"]) for item in data["values"]]
+        volumes = [float(item["volume"]) for item in data["values"]]
+        highs = [float(item["high"]) for item in data["values"]]
+        lows = [float(item["low"]) for item in data["values"]]
         
-        result = {
-            "Name": company_name,
-            "Current": df["Close"][-1],
-            "Close": df["Close"].tolist(),
-            "Volume": df["Volume"].tolist(),
-            "High": df["High"].tolist(),
-            "Low": df["Low"].tolist()
+        return {
+            "Close": closes,
+            "Volume": volumes,
+            "High": highs,
+            "Low": lows,
+            "Current": closes[-1]
         }
-        
-        STOCK_DATA_CACHE[symbol] = result
-        return result
     except Exception as e:
-        print(f"❌ Error fetching stock data: {str(e)}")
-        return {}
+        print(f"❌ Twelve Data error: {str(e)}")
+        return None
 
-def analyze_stock_fundamentals(symbol: str) -> dict:
-    """Fetch fundamentals with caching"""
-    if symbol in FUNDAMENTALS_CACHE:
-        return FUNDAMENTALS_CACHE[symbol]
+async def fetch_marketstack_data(symbol: str, days: int) -> dict:
+    """Fetch data from Marketstack API"""
+    api_key = APIS.get("marketstack")
+    if not api_key:
+        return None
+        
+    print(f"📊 Using Marketstack for {symbol}")
+    params = {
+        "access_key": api_key,
+        "symbols": symbol,
+        "limit": days
+    }
     
     try:
-        stock = yf.Ticker(symbol)
-        info = stock.info
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "http://api.marketstack.com/v1/eod",
+                params=params,
+                timeout=10
+            )
+            data = response.json()
+            
+        if "data" not in data or not data["data"]:
+            return None
+            
+        # Process data into consistent format
+        closes = [float(item["close"]) for item in data["data"]]
+        volumes = [float(item["volume"]) for item in data["data"]]
+        highs = [float(item["high"]) for item in data["data"]]
+        lows = [float(item["low"]) for item in data["data"]]
         
-        # Get key metrics
-        pe_ratio = info.get('trailingPE', 0)
-        peg_ratio = info.get('pegRatio', 0)
-        debt_equity = info.get('debtToEquity', 0)
-        roe = info.get('returnOnEquity', 0)
-        dividend = info.get('dividendYield', 0) * 100 if info.get('dividendYield') else 0
-        beta = info.get('beta', 1)
-        profit_margins = info.get('profitMargins', 0) * 100 if info.get('profitMargins') else 0
-        
-        # Get analyst recommendations
-        rec = info.get('recommendationKey', 'none').title()
-        target_price = info.get('targetMeanPrice', 0)
-        
-        result = {
-            "pe_ratio": pe_ratio,
-            "peg_ratio": peg_ratio,
-            "debt_equity": debt_equity,
-            "roe": roe,
-            "dividend": dividend,
-            "beta": beta,
-            "profit_margins": profit_margins,
-            "recommendation": rec,
-            "target_price": target_price
+        return {
+            "Close": closes,
+            "Volume": volumes,
+            "High": highs,
+            "Low": lows,
+            "Current": closes[-1]
         }
-        
-        FUNDAMENTALS_CACHE[symbol] = result
-        return result
     except Exception as e:
-        print(f"❌ Error analyzing fundamentals: {str(e)}")
+        print(f"❌ Marketstack error: {str(e)}")
+        return None
+
+async def fetch_alpha_vantage_data(symbol: str, days: int) -> dict:
+    """Fetch data from Alpha Vantage API"""
+    api_key = APIS.get("alpha_vantage")
+    if not api_key:
+        return None
+        
+    print(f"📉 Using Alpha Vantage for {symbol}")
+    params = {
+        "function": "TIME_SERIES_DAILY_ADJUSTED",
+        "symbol": symbol,
+        "apikey": api_key,
+        "outputsize": "compact" if days <= 100 else "full"
+    }
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://www.alphavantage.co/query",
+                params=params,
+                timeout=10
+            )
+            data = response.json()
+            
+        if "Time Series (Daily)" not in data:
+            return None
+            
+        # Process data into consistent format
+        time_series = data["Time Series (Daily)"]
+        sorted_dates = sorted(time_series.keys(), reverse=True)[:days]
+        
+        closes = [float(time_series[date]["4. close"]) for date in sorted_dates]
+        volumes = [float(time_series[date]["6. volume"]) for date in sorted_dates]
+        highs = [float(time_series[date]["2. high"]) for date in sorted_dates]
+        lows = [float(time_series[date]["3. low"]) for date in sorted_dates]
+        
+        return {
+            "Close": closes,
+            "Volume": volumes,
+            "High": highs,
+            "Low": lows,
+            "Current": closes[0]
+        }
+    except Exception as e:
+        print(f"❌ Alpha Vantage error: {str(e)}")
+        return None
+
+async def fetch_stock_data(symbol: str, days: int = 30) -> dict:
+    """Fetch stock data with robust fallback mechanism"""
+    # Check cache first
+    cache_key = f"{symbol}_{days}d"
+    if cache_key in STOCK_DATA_CACHE:
+        return STOCK_DATA_CACHE[cache_key]
+    
+    # Try preferred APIs in order
+    for api_name in PREFERRED_API_ORDER:
+        try:
+            if api_name == "twelve_data":
+                data = await fetch_twelve_data(symbol, days)
+            elif api_name == "marketstack":
+                data = await fetch_marketstack_data(symbol, days)
+            elif api_name == "alpha_vantage":
+                data = await fetch_alpha_vantage_data(symbol, days)
+            
+            if data:
+                STOCK_DATA_CACHE[cache_key] = data
+                return data
+        except Exception as e:
+            print(f"⚠️ {api_name} failed: {str(e)}")
+            continue
+    
+    return {}
+
+async def fetch_multiple_stocks(symbols: List[str]) -> Dict[str, Any]:
+    """Fetch multiple stocks in parallel"""
+    tasks = [fetch_stock_data(sym) for sym in symbols]
+    results = await asyncio.gather(*tasks)
+    return {sym: result for sym, result in zip(symbols, results) if result}
+
+async def analyze_stock_fundamentals_safe(symbol: str) -> dict:
+    """Fallback-safe fundamentals using available APIs"""
+    try:
+        # Try Twelve Data first
+        twelve_data = await fetch_twelve_data(symbol, 1)
+        if twelve_data:
+            return {
+                "pe_ratio": None,  # Twelve Data doesn't provide this
+                "peg_ratio": None,
+                "debt_equity": None,
+                "roe": None,
+                "dividend": None,
+                "beta": None,
+                "profit_margins": None,
+                "recommendation": None,
+                "target_price": None,
+                "current_price": twelve_data["Current"]
+            }
+            
+        # Fallback to Alpha Vantage
+        alpha_data = await fetch_alpha_vantage_data(symbol, 1)
+        if alpha_data:
+            return {
+                "pe_ratio": None,  # Alpha Vantage requires separate endpoint
+                "peg_ratio": None,
+                "debt_equity": None,
+                "roe": None,
+                "dividend": None,
+                "beta": None,
+                "profit_margins": None,
+                "recommendation": None,
+                "target_price": None,
+                "current_price": alpha_data["Current"]
+            }
+            
+        return {}
+    except Exception as e:
+        print(f"❌ Fundamental fetch failed for {symbol}: {str(e)}")
         return {}
 
 def get_risk_category(risk_score: int) -> str:
@@ -239,9 +383,11 @@ async def fetch_crypto_price(symbol: str) -> str:
     clean_symbol = symbol.replace(r"\W+", "", symbol).upper() + "USDT"
     try:
         print(f"💰 Fetching crypto price for {symbol}")
-        response = requests.get(
-            f"https://api.binance.com/api/v3/ticker/price?symbol={clean_symbol}"
-        )
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"https://api.binance.com/api/v3/ticker/price?symbol={clean_symbol}",
+                timeout=5
+            )
         data = response.json()
         if 'price' in data:
             print(f"✅ Crypto price fetched: {data['price']}")
@@ -252,124 +398,76 @@ async def fetch_crypto_price(symbol: str) -> str:
         return ""
 
 async def fetch_stock_price(symbol: str) -> str:
-    """Fetch stock price using fallback logic: Marketstack → Alpha Vantage → Twelve Data → Yahoo Finance"""
-    # === Primary: Marketstack ===
-    marketstack_key = APIS.get("marketstack")
-    if marketstack_key:
+    """Fetch stock price using fallback logic"""
+    # Try preferred APIs in order
+    for api_name in PREFERRED_API_ORDER:
         try:
-            print(f"📈 Fetching stock price for {symbol} (Marketstack)")
-            response = requests.get(
-                "http://api.marketstack.com/v1/eod",
-                params={
-                    "access_key": marketstack_key,
-                    "symbols": symbol,
-                    "limit": 1
-                },
-                timeout=5
-            )
-            stock_json = response.json()
-            if "data" in stock_json and stock_json["data"]:
-                stock_data = stock_json["data"][0]
-                print(f"✅ Marketstack success: ${stock_data['close']}")
-                return f"📈 **{symbol} Price**: **${stock_data['close']}** (as of {stock_data['date']})"
-            else:
-                print(f"⚠️ Marketstack fallback: {stock_json.get('error', 'No data')}")
+            if api_name == "twelve_data":
+                api_key = APIS.get("twelve_data")
+                if not api_key:
+                    continue
+                    
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        "https://api.twelvedata.com/time_series",
+                        params={
+                            "symbol": symbol,
+                            "interval": "1day",
+                            "outputsize": 1,
+                            "apikey": api_key
+                        },
+                        timeout=5
+                    )
+                data = response.json()
+                if "values" in data and data["values"]:
+                    latest = data["values"][0]
+                    return f"📈 **{symbol} Price**: **${latest['close']}** (as of {latest['datetime']})"
+            
+            elif api_name == "marketstack":
+                api_key = APIS.get("marketstack")
+                if not api_key:
+                    continue
+                    
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        "http://api.marketstack.com/v1/eod",
+                        params={
+                            "access_key": api_key,
+                            "symbols": symbol,
+                            "limit": 1
+                        },
+                        timeout=5
+                    )
+                data = response.json()
+                if "data" in data and data["data"]:
+                    stock_data = data["data"][0]
+                    return f"📈 **{symbol} Price**: **${stock_data['close']}** (as of {stock_data['date']})"
+            
+            elif api_name == "alpha_vantage":
+                api_key = APIS.get("alpha_vantage")
+                if not api_key:
+                    continue
+                    
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        "https://www.alphavantage.co/query",
+                        params={
+                            "function": "TIME_SERIES_DAILY_ADJUSTED",
+                            "symbol": symbol,
+                            "apikey": api_key
+                        },
+                        timeout=5
+                    )
+                data = response.json()
+                if "Time Series (Daily)" in data:
+                    latest_date = sorted(data["Time Series (Daily)"].keys())[-1]
+                    close_price = data["Time Series (Daily)"][latest_date]["4. close"]
+                    return f"📈 **{symbol} Price**: **${close_price}** (as of {latest_date})"
+                    
         except Exception as e:
-            print(f"❌ Marketstack error: {str(e)}")
-    else:
-        print("⚠️ Marketstack API key not configured")
-
-    # === Fallback 1: Alpha Vantage ===
-    alpha_vantage_key = APIS.get("alpha_vantage")
-    if alpha_vantage_key:
-        try:
-            print(f"📉 Trying Alpha Vantage fallback for {symbol}")
-            alpha_response = requests.get(
-                "https://www.alphavantage.co/query",
-                params={
-                    "function": "TIME_SERIES_DAILY_ADJUSTED",
-                    "symbol": symbol,
-                    "apikey": alpha_vantage_key
-                },
-                timeout=5
-            )
-            data = alpha_response.json()
-            if "Time Series (Daily)" in data:
-                latest_date = sorted(data["Time Series (Daily)"].keys())[-1]
-                close_price = data["Time Series (Daily)"][latest_date]["4. close"]
-                print(f"✅ Alpha Vantage success: ${close_price}")
-                return f"📈 **{symbol} Price**: **${close_price}** (as of {latest_date})"
-            else:
-                error_msg = data.get("Error Message", "No time series data")
-                print(f"⚠️ Alpha Vantage fallback: {error_msg}")
-        except Exception as e:
-            print(f"❌ Alpha Vantage error: {str(e)}")
-    else:
-        print("⚠️ Alpha Vantage API key not configured")
-
-    # === Fallback 2: Twelve Data ===
-    twelve_data_key = APIS.get("twelve_data")
-    if twelve_data_key:
-        try:
-            print(f"📉 Trying Twelve Data fallback for {symbol}")
-            twelve_response = requests.get(
-                "https://api.twelvedata.com/time_series",
-                params={
-                    "symbol": symbol,
-                    "interval": "1day",
-                    "outputsize": 1,
-                    "apikey": twelve_data_key
-                },
-                timeout=5
-            )
-            data = twelve_response.json()
-            if "values" in data and data["values"]:
-                latest = data["values"][0]
-                print(f"✅ Twelve Data success: ${latest['close']}")
-                return f"📈 **{symbol} Price**: **${latest['close']}** (as of {latest['datetime']})"
-            else:
-                error_msg = data.get("message", "No values data")
-                print(f"⚠️ Twelve Data fallback: {error_msg}")
-        except Exception as e:
-            print(f"❌ Twelve Data error: {str(e)}")
-    else:
-        print("⚠️ Twelve Data API key not configured")
-
-    # === Fallback 3: Yahoo Finance direct API ===
-    try:
-        print(f"📉 Trying Yahoo Finance direct API for {symbol}")
-        response = requests.get(
-            f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}",
-            params={"range": "1d", "interval": "1d"},
-            timeout=5
-        )
-        data = response.json()
-        if "chart" in data and "result" in data["chart"]:
-            result = data["chart"]["result"][0]
-            meta = result["meta"]
-            regular_price = meta["regularMarketPrice"]
-            print(f"✅ Yahoo Finance direct success: ${regular_price}")
-            return f"📈 **{symbol} Price**: **${regular_price}** (latest)"
-    except Exception as e:
-        print(f"❌ Yahoo Finance direct error: {str(e)}")
-
-    # === Final Fallback: yfinance library with multiple periods ===
-    try:
-        print(f"📉 Trying yfinance library fallback for {symbol}")
-        stock = yf.Ticker(symbol)
-        # Try different periods to get data
-        for period in ["1d", "5d", "1mo"]:
-            hist = stock.history(period=period)
-            if not hist.empty:
-                close_price = hist["Close"].iloc[-1]
-                last_date = hist.index[-1].strftime('%Y-%m-%d')
-                print(f"✅ yfinance success: ${close_price} for period {period}")
-                return f"📈 **{symbol} Price**: **${close_price:.2f}** (as of {last_date})"
-        print(f"⚠️ yfinance returned no data for {symbol} after multiple periods")
-    except Exception as e:
-        print(f"❌ yfinance error: {str(e)}")
-
-    # If all fail
+            print(f"⚠️ {api_name} price fetch failed: {str(e)}")
+            continue
+    
     return f"⚠️ Sorry, couldn't fetch price for **{symbol}** right now."
 
 async def fetch_currency_rates(base: str = "USD", target: str = "EUR") -> str:
@@ -380,16 +478,17 @@ async def fetch_currency_rates(base: str = "USD", target: str = "EUR") -> str:
     
     try:
         print(f"💱 Fetching currency rates: {base} to {target}")
-        response = requests.get(
-            "https://www.alphavantage.co/query",
-            params={
-                "function": "CURRENCY_EXCHANGE_RATE",
-                "from_currency": base,
-                "to_currency": target,
-                "apikey": alpha_vantage_key
-            },
-            timeout=5
-        )
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://www.alphavantage.co/query",
+                params={
+                    "function": "CURRENCY_EXCHANGE_RATE",
+                    "from_currency": base,
+                    "to_currency": target,
+                    "apikey": alpha_vantage_key
+                },
+                timeout=5
+            )
         data = response.json()
         if "Realtime Currency Exchange Rate" in data:
             rate = data["Realtime Currency Exchange Rate"]["5. Exchange Rate"]
@@ -416,14 +515,15 @@ async def fetch_metal_prices(metal: str) -> str:
     
     try:
         print(f"🥇 Fetching metal price for {metal}")
-        response = requests.get(
-            "https://finnhub.io/api/v1/quote",
-            params={
-                "symbol": symbol,
-                "token": finnhub_key
-            },
-            timeout=5
-        )
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "https://finnhub.io/api/v1/quote",
+                params={
+                    "symbol": symbol,
+                    "token": finnhub_key
+                },
+                timeout=5
+            )
         data = response.json()
         if "c" in data:
             print(f"✅ Metal price fetched: ${data['c']} per ounce")
@@ -443,16 +543,17 @@ async def fetch_finance_news() -> str:
     
     try:
         print("📰 Fetching financial news")
-        response = requests.get(
-            "http://api.mediastack.com/v1/news",
-            params={
-                "access_key": mediastack_key,
-                "categories": "business",
-                "languages": "en",
-                "limit": 5
-            },
-            timeout=5
-        )
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                "http://api.mediastack.com/v1/news",
+                params={
+                    "access_key": mediastack_key,
+                    "categories": "business",
+                    "languages": "en",
+                    "limit": 5
+                },
+                timeout=5
+            )
         data = response.json()
         if "data" in data and data["data"]:
             articles = data["data"]
@@ -484,8 +585,8 @@ def analyze_sentiment(text: str) -> str:
     return sentiment
 
 # === Enhanced Recommendation Engine ===
-def generate_stock_recommendation(user_profile: dict) -> str:
-    """Generate personalized stock recommendation"""
+async def generate_stock_recommendation(user_profile: dict) -> str:
+    """Generate personalized stock recommendation with parallel data fetching"""
     risk = user_profile.get("riskTolerance", 5)
     investment_horizon = user_profile.get("investmentHorizon", 5)
     print(f"📈 Generating stock recommendation for risk level: {risk}/10")
@@ -494,10 +595,14 @@ def generate_stock_recommendation(user_profile: dict) -> str:
     risk_category = get_risk_category(risk)
     category_data = RISK_CATEGORIES[risk_category]
     
-    # Evaluate candidates
+    # Fetch all candidate stocks in parallel
+    candidate_symbols = category_data["stocks"]
+    stocks_data = await fetch_multiple_stocks(candidate_symbols)
+    
+    # Process candidates
     candidates = []
-    for symbol in category_data["stocks"]:
-        data = get_stock_data(symbol)
+    for symbol in candidate_symbols:
+        data = stocks_data.get(symbol)
         if not data or not data.get('Close'):
             continue
             
@@ -506,7 +611,7 @@ def generate_stock_recommendation(user_profile: dict) -> str:
         current_price = data['Current']
         trend = ((prices[-1] - prices[0]) / prices[0]) * 100
         volatility = pd.Series(prices).pct_change().std() * 100
-        fundamentals = analyze_stock_fundamentals(symbol)
+        fundamentals = await analyze_stock_fundamentals_safe(symbol)
         technicals = calculate_technical_metrics(prices)
         
         # Skip if too volatile for category
@@ -621,21 +726,28 @@ async def chat_with_bot(request: ChatRequest):
         sentiment = analyze_sentiment(user_message)
         response_parts = [f"🔍 **Sentiment**: {sentiment}"]
         
-        # === 1. Check for investment advice request (moved up) ===
-        if ("invest" in lower_msg or 
+        # Check for investment advice request
+        investment_request = (
+            "invest" in lower_msg or 
             "stock" in lower_msg or 
             "long term" in lower_msg or 
             "what should i buy" in lower_msg or
-            "recommend" in lower_msg):
+            "recommend" in lower_msg or
+            "portfolio" in lower_msg or 
+            "diversify" in lower_msg or 
+            "buy stock" in lower_msg
+        )
+        
+        if investment_request:
             print("🔍 Investment advice request detected")
-            response_text = generate_stock_recommendation(profile)
+            response_text = await generate_stock_recommendation(profile)
             print(f"📤 Sending investment recommendation: {response_text[:100]}...")
             return JSONResponse(content={
                 "output": response_text,
                 "session_id": session_id
             })
         
-        # === 2. Check for specific data requests ===
+        # Check for specific data requests
         # Check for crypto
         if "crypto" in lower_msg or "bitcoin" in lower_msg or "btc" in lower_msg:
             crypto = "BTC" if "btc" in lower_msg else "ETH"
@@ -674,18 +786,6 @@ async def chat_with_bot(request: ChatRequest):
         if len(response_parts) > 1:
             response_text = "\n\n".join(response_parts)
             print(f"📤 Sending API-based response: {response_text[:100]}...")
-            return JSONResponse(content={
-                "output": response_text,
-                "session_id": session_id
-            })
-        
-        # Generate stock recommendation for investment queries
-        if ("portfolio" in lower_msg or 
-            "diversify" in lower_msg or 
-            "buy stock" in lower_msg):
-            print("🔍 Investment advice request detected")
-            response_text = generate_stock_recommendation(profile)
-            print(f"📤 Sending investment recommendation: {response_text[:100]}...")
             return JSONResponse(content={
                 "output": response_text,
                 "session_id": session_id
@@ -734,11 +834,14 @@ async def health_check():
     print("🩺 Health check requested")
     return {
         "status": "operational",
+        "version": "1.1.0",
         "model": "gemini-1.5-flash",
+        "api_priority": PREFERRED_API_ORDER,
         "services": {
             "alpha_vantage": bool(APIS["alpha_vantage"]),
             "finnhub": bool(APIS["finnhub"]),
             "marketstack": bool(APIS["marketstack"]),
+            "twelve_data": bool(APIS["twelve_data"]),
             "binance": bool(APIS["binance"]["key"]),
             "mediastack": bool(APIS["mediastack"])
         },
@@ -746,8 +849,15 @@ async def health_check():
             "response_cache": len(RESPONSE_CACHE),
             "stock_data_cache": len(STOCK_DATA_CACHE),
             "fundamentals_cache": len(FUNDAMENTALS_CACHE)
-        }
+        },
+        "uptime": round(time.time() - app.startup_time, 2) if hasattr(app, 'startup_time') else 0
     }
+
+# === Startup ===
+@app.on_event("startup")
+async def startup_event():
+    app.startup_time = time.time()
+    print("🚀 Application startup complete")
 
 if __name__ == "__main__":
     import uvicorn
