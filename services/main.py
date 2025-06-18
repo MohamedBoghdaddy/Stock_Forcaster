@@ -3,10 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from Stock_Forecaster import app as stock_app
 from chatbot.Gemini_Service import app as gemini_app
 
-main_app = FastAPI(title="Unified Financial AI API")
+app = FastAPI(title="Unified Financial AI API")
 
 # Add CORS to main app
-main_app.add_middleware(
+app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
@@ -15,10 +15,13 @@ main_app.add_middleware(
 )
 
 # Mount sub-apps
-main_app.mount("/stock", stock_app)
-main_app.mount("/chatbot", gemini_app)
+app.mount("/stock", stock_app)
+app.mount("/chatbot", gemini_app)
 
-@main_app.get("/")
+print("Sub-apps loaded:", app.routes)
+
+
+@app.get("/")
 def root():
     return {
         "message": "🚀 Unified Stock Forecaster + AI Chatbot API is live",
@@ -27,4 +30,4 @@ def root():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:main_app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
