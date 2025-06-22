@@ -1,0 +1,218 @@
+/* General Styling */
+.analytic-container {
+  padding: 20px;
+  background-color: #f7f9fb;
+  border-radius: 8px;
+  margin-top: 55px;
+  margin-left: 18%;
+  margin-right: auto;
+  width: 80%;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+}
+
+/* Chart Container */
+.chart-container {
+  margin-bottom: 30px;
+  padding: 20px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+  text-align: center;
+}
+
+/* Centered Spinner */
+.centered-spinner {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 60vh;
+}
+
+/* Reports Container */
+.report-container {
+  margin-top: 30px;
+  padding: 20px;
+  background: white;
+  border-radius: 8px;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.report-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+  justify-content: center;
+}
+
+/* Report Card */
+.report-card {
+  background: #ffffff;
+  border-radius: 8px;
+  padding: 15px;
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+  transition: transform 0.2s ease-in-out;
+}
+
+.report-card:hover {
+  transform: scale(1.05);
+}
+
+/* Report Icon */
+.report-icon {
+  font-size: 50px;
+  color: #3498db;
+  margin-bottom: 10px;
+}
+
+/* Report Info */
+.report-info {
+  text-align: center;
+  margin-bottom: 10px;
+}
+
+.report-info h4 {
+  font-size: 18px;
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+.report-info p {
+  font-size: 14px;
+  color: #7f8c8d;
+}
+
+/* Download Button */
+.download-btn {
+  background-color: #3498db;
+  color: white;
+  border: none;
+  padding: 8px 15px;
+  border-radius: 5px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: background 0.3s;
+}
+
+.download-btn:hover {
+  background-color: #2980b9;
+}
+
+/* Container for the grid layout */
+.grid-container {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: space-around;
+  margin-top: 30px;
+}
+
+/* Each metric card */
+.metric-card {
+  border-radius: 1rem;
+  border: 1px solid #e5e7eb; /* Tailwind: border-gray-200 */
+  background-color: #ffffff;
+  padding: 1.25rem;
+  width: 250px; /* You can adjust the width as needed */
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+  text-align: center;
+  transition: transform 0.2s ease-in-out;
+}
+
+/* Metric card hover effect */
+.metric-card:hover {
+  transform: scale(1.05);
+}
+
+/* Flex container for item header */
+.metric-header {
+  display: flex;
+  justify-content:center;
+  align-items: center;
+}
+
+/* Flex container for icon and text */
+.metric-info {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.metric-info img {
+  width: 1.5rem; /* Tailwind: w-6 */
+  height: 1.5rem; /* Tailwind: h-6 */
+}
+
+/* Text for the symbol name */
+.symbol-name {
+  font-size: 0.875rem; /* Tailwind: text-sm */
+  color: #6b7280; /* Tailwind: text-gray-500 */
+}
+
+/* Badge for change */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 9999px;
+  font-weight: 500;
+}
+
+/* Badge success color */
+.badge-success {
+  background-color: #16a34a; /* Tailwind: bg-green-600 */
+  color: white;
+}
+
+/* Badge error color */
+.badge-error {
+  background-color: #e11d48; /* Tailwind: bg-red-600 */
+  color: white;
+}
+
+/* Font styles for the price */
+.price {
+  margin-top: 0.75rem;
+  font-weight: 700;
+  color: #1f2937; /* Tailwind: text-gray-800 */
+  font-size: 1.25rem; /* Tailwind: text-xl */
+}
+
+.dark .price {
+  color: #ffffff; /* Tailwind: dark:text-white/90 */
+}
+
+/* Responsive Design */
+@media (max-width: 1024px) {
+  .analytics-container {
+    width: 90%;
+  }
+
+  .report-card {
+    width: 100%;
+  }
+}
+
+@media (max-width: 768px) {
+  .analytic-container {
+    padding: 15px;
+    margin-left: 35%;
+  }
+
+  .report-list {
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .report-card {
+    width: 100%;
+  }
+}

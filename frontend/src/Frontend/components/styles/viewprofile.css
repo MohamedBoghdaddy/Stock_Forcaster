@@ -1,0 +1,109 @@
+/* === Container === */
+.profile-container {
+  max-width: 960px;
+  margin: 2rem auto;
+  padding: 2rem;
+  background: #ffffff;
+  border-radius: 20px;
+  box-shadow: 0 15px 25px rgba(0, 0, 0, 0.06);
+  font-family: "Segoe UI", sans-serif;
+}
+
+/* === Header === */
+.profile-container h2 {
+  text-align: center;
+  color: #333;
+  margin-bottom: 2rem;
+}
+
+/* === User Icon === */
+.profile-icon {
+  font-size: 4rem;
+  color: #555;
+  display: block;
+  margin: 0 auto 1.5rem;
+}
+
+/* === Grid Layout === */
+.profile-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1.5rem;
+}
+
+/* === Profile Card Block === */
+.profile-item {
+  background: #f8f9fa;
+  padding: 1rem 1.25rem;
+  border-radius: 12px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.04);
+  transition: background 0.2s ease;
+  cursor: pointer;
+}
+
+/* === Field Label === */
+.profile-item strong {
+  font-size: 0.95rem;
+  color: #222;
+  display: block;
+  margin-bottom: 0.5rem;
+}
+
+/* === Value Display Row === */
+.profile-value-row {
+  font-size: 0.95rem;
+  color: #444;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* === Inputs === */
+.edit-input,
+.edit-select,
+textarea {
+  width: 100%;
+  font-size: 0.95rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  background: #fff;
+  font-family: inherit;
+  box-sizing: border-box;
+  transition: border 0.2s ease;
+}
+
+.edit-input:focus,
+.edit-select:focus,
+textarea:focus {
+  border-color: #3f51b5;
+  outline: none;
+}
+
+/* === Save Button === */
+.save-btn {
+  margin-top: 2rem;
+  padding: 0.8rem 2rem;
+  background-color: #3f51b5;
+  color: white;
+  border: none;
+  font-size: 1rem;
+  font-weight: 500;
+  border-radius: 10px;
+  cursor: pointer;
+  display: block;
+  margin-left: auto;
+  transition: background-color 0.3s ease;
+}
+
+.save-btn:hover {
+  background-color: #2c3ea9;
+}
+
+/* === Loading State === */
+.loader-container,
+.profile-container p {
+  text-align: center;
+  color: #666;
+  margin-top: 3rem;
+}

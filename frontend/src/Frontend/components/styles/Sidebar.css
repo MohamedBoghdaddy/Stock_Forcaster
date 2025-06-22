@@ -1,0 +1,106 @@
+/* === Sidebar Container === */
+.sidebar {
+  width: 220px;
+  background: #101c28;
+  color: white;
+  height: 100vh;
+  position: fixed;
+  top: 0;
+  left: 0;
+  padding: 20px;
+  box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  transition: all 0.3s ease-in-out;
+  z-index: 50;
+}
+
+/* === Dark Mode (optional trigger via .dark class) === */
+.sidebar.dark {
+  background-color: #111827;
+  color: #e5e7eb;
+}
+
+/* === Sidebar Header === */
+.sidebar-header {
+  font-size: 20px;
+  font-weight: bold;
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+/* === Profile Photo Section === */
+.profile-photo-section {
+  text-align: center;
+  margin-bottom: 20px;
+}
+
+.profile-photo {
+  width: 100px;
+  height: 100px;
+  border-radius: 50%;
+  object-fit: cover;
+  margin-bottom: 10px;
+  border: 3px solid #ffffff;
+}
+
+.error-message {
+  color: #f87171;
+  font-size: 0.875rem;
+  margin-top: 0.5rem;
+}
+
+/* === Sidebar Links === */
+.sidebar-menu {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  flex-grow: 1;
+}
+
+.sidebar-menu li {
+  margin-bottom: 10px;
+}
+
+.sidebar-menu a {
+  color: white;
+  text-decoration: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  transition: background 0.3s ease;
+  font-size: 16px;
+  border-radius: 6px;
+}
+
+.sidebar-menu a:hover {
+  background: #232d36;
+}
+
+/* === Avatar Editor Range and Buttons === */
+.profile-photo-section input[type="range"] {
+  width: 100%;
+  margin-top: 10px;
+  margin-bottom: 10px;
+}
+
+/* === Scrollbar Cleanup === */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* === Responsive Design === */
+@media (max-width: 768px) {
+  .sidebar {
+    width: 180px;
+  }
+
+  .dashboard-container {
+    margin-left: 180px;
+  }
+}
