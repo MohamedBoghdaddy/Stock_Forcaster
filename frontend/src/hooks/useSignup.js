@@ -16,6 +16,11 @@ export const useSignup = () => {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [gender, setGender] = useState("");
+
+  // ADD these two states for password visibility toggles
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
   const [errorMessage, setErrorMessage] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -27,7 +32,6 @@ export const useSignup = () => {
     setErrorMessage("");
     setSuccessMessage("");
 
-    // ✅ Password validation
     if (password !== confirmPassword) {
       setErrorMessage("Passwords do not match.");
       setIsLoading(false);
@@ -50,10 +54,8 @@ export const useSignup = () => {
 
       const { user, token } = response.data;
 
-      // ✅ Store user data in localStorage
       localStorage.setItem("user", JSON.stringify({ user, token }));
 
-      // ✅ Dispatch signup success
       dispatch({ type: "LOGIN_SUCCESS", payload: user });
 
       setSuccessMessage("Registration successful.");
@@ -82,6 +84,10 @@ export const useSignup = () => {
     setLastName,
     gender,
     setGender,
+    showPassword,
+    setShowPassword,
+    showConfirmPassword,
+    setShowConfirmPassword,
     errorMessage,
     successMessage,
     isLoading,
