@@ -21,6 +21,33 @@ const UserSchema = new mongoose.Schema(
       type: String,
     },
 
+    blocked: {
+      type: Boolean,
+      default: false,
+    },
+
+    blocked: {
+      type: Boolean,
+      default: false,
+    },
+
+    // models/UserModel.js
+
+    lastLogin: {
+      type: Date,
+    },
+    lastIP: {
+      type: String,
+    },
+    activityLog: [
+      {
+        action: String,
+        timestamp: Date,
+      },
+    ],
+    profilePhoto: {
+      type: String, // URL or path
+    },
   },
   { timestamps: true }
 );

@@ -1,14 +1,17 @@
 import express from "express";
 import {
-  askGemini,
-  translateText,
-  healthCheck,
+  handleChatRequest,
+  getChatByID,
 } from "../controller/chatbotController.js";
+import { auth } from "../Middleware/authMiddleware.js"; 
+import { getChatsByUser } from "../controller/chatbotController.js";
 
 const router = express.Router();
 
-router.get("/health", healthCheck); // GET /api/health
-router.post("/chat", askGemini); // POST /api/chat
-router.post("/translate", translateText); // POST /api/translate
+// Route for handling chatbot requests
+router.post("/chat", handleChatRequest);
+router.get("/chat/history", auth, getChatByID);
+
+router.get("/user/:userId", getChatsByUser);
 
 export default router;
