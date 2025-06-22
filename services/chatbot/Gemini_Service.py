@@ -23,8 +23,7 @@ from scipy.stats import linregress
 load_dotenv()
 
 # === Setup ===
-app = FastAPI(title="Stock Forecaster API", version="1.1.0")
-print("✅ FastAPI application initialized")
+app = FastAPI(title="Financial Advisor Chatbot", version="2.0.0")
 
 # CORS Configuration
 app.add_middleware(
@@ -33,7 +32,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-print("🔒 CORS middleware configured")
 
 # API Configuration
 PREFERRED_API_ORDER = [
@@ -55,14 +53,11 @@ APIS = {
 }
 
 # Initialize Gemini
-print("🧠 Configuring Gemini model...")
 try:
     genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
     model = genai.GenerativeModel("gemini-1.5-flash")
-    print("✅ Gemini configured successfully")
 except Exception as e:
-    print(f"❌ Gemini configuration failed: {str(e)}")
-    raise RuntimeError("Gemini initialization failed")
+    raise RuntimeError(f"Gemini initialization failed: {str(e)}")
 
 # Configure logging
 logging.basicConfig(
@@ -70,18 +65,15 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-print("📝 Logging configured")
 
 # Create caches
 RESPONSE_CACHE = TTLCache(maxsize=1000, ttl=300)  # 5-minute cache
 STOCK_DATA_CACHE = TTLCache(maxsize=200, ttl=3600)  # 1-hour cache
 FUNDAMENTALS_CACHE = TTLCache(maxsize=200, ttl=86400)  # 24-hour cache
-print("💾 Caches initialized")
 
 # Session management
 SESSION_HISTORY = TTLCache(maxsize=1000, ttl=3600)  # 1-hour session cache
 SESSION_LOCK = asyncio.Lock()
-print("🔐 Session management initialized")
 
 # Financial knowledge base
 RISK_CATEGORIES = {
@@ -135,16 +127,39 @@ FAQS = {
     "how to analyze stocks": "🔍 Look at P/E ratio, growth rates, competitive advantage, and management quality."
 }
 
-print("💡 Financial knowledge base loaded")
+AI_INSIGHTS_PATH = "ai_insights.json"
+LOCAL_STOCK_DATASET_PATH = "stock/stocks_dataset"
 
 # === Helper Functions ===
+def load_ai_insights() -> Dict[str, Dict]:
+    """Load predicted returns and volatility from file with caching"""
+    try:
+        if os.path.exists(AI_INSIGHTS_PATH):
+            with open(AI_INSIGHTS_PATH, "r") as f:
+                return json.load(f)
+    except Exception:
+        logger.warning("Failed to load AI insights file")
+    
+    # Default values if file can't be loaded
+    return {
+        "predicted_returns": {
+            "gold": "6.2%",
+            "stocks": "8.9%",
+            "real_estate": "7.15%"
+        },
+        "market_volatility": {
+            "gold": "0.02",
+            "stocks": "0.06",
+            "real_estate": "0.01"
+        }
+    }
+
 async def fetch_twelve_data(symbol: str, days: int) -> dict:
     """Fetch data from Twelve Data API"""
     api_key = APIS.get("twelve_data")
     if not api_key:
         return None
         
-    print(f"📈 Using Twelve Data for {symbol}")
     params = {
         "symbol": symbol,
         "interval": "1day",
@@ -178,7 +193,7 @@ async def fetch_twelve_data(symbol: str, days: int) -> dict:
             "Current": closes[-1]
         }
     except Exception as e:
-        print(f"❌ Twelve Data error: {str(e)}")
+        logger.error(f"Twelve Data error: {str(e)}")
         return None
 
 async def fetch_marketstack_data(symbol: str, days: int) -> dict:
@@ -187,7 +202,6 @@ async def fetch_marketstack_data(symbol: str, days: int) -> dict:
     if not api_key:
         return None
         
-    print(f"📊 Using Marketstack for {symbol}")
     params = {
         "access_key": api_key,
         "symbols": symbol,
@@ -220,7 +234,7 @@ async def fetch_marketstack_data(symbol: str, days: int) -> dict:
             "Current": closes[-1]
         }
     except Exception as e:
-        print(f"❌ Marketstack error: {str(e)}")
+        logger.error(f"Marketstack error: {str(e)}")
         return None
 
 async def fetch_alpha_vantage_data(symbol: str, days: int) -> dict:
@@ -229,7 +243,6 @@ async def fetch_alpha_vantage_data(symbol: str, days: int) -> dict:
     if not api_key:
         return None
         
-    print(f"📉 Using Alpha Vantage for {symbol}")
     params = {
         "function": "TIME_SERIES_DAILY_ADJUSTED",
         "symbol": symbol,
@@ -266,7 +279,7 @@ async def fetch_alpha_vantage_data(symbol: str, days: int) -> dict:
             "Current": closes[0]
         }
     except Exception as e:
-        print(f"❌ Alpha Vantage error: {str(e)}")
+        logger.error(f"Alpha Vantage error: {str(e)}")
         return None
 
 async def fetch_stock_data(symbol: str, days: int = 30) -> dict:
@@ -290,56 +303,49 @@ async def fetch_stock_data(symbol: str, days: int = 30) -> dict:
                 STOCK_DATA_CACHE[cache_key] = data
                 return data
         except Exception as e:
-            print(f"⚠️ {api_name} failed: {str(e)}")
+            logger.warning(f"{api_name} failed: {str(e)}")
             continue
     
-    return {}
+    return await get_local_stock_data(symbol)
+
+async def get_local_stock_data(symbol: str) -> Dict[str, Any]:
+    """Get stock data from local dataset"""
+    file_path = os.path.join(LOCAL_STOCK_DATASET_PATH, f"{symbol}.csv")
+    if not os.path.exists(file_path):
+        return {}
+
+    try:
+        df = pd.read_csv(file_path)
+        if df.empty:
+            return {}
+
+        if 'Date' in df.columns:
+            df['Date'] = pd.to_datetime(df['Date'])
+            df = df.sort_values('Date')
+
+        last_30_days = df.tail(30)
+        if last_30_days.empty:
+            return {}
+
+        data = {
+            "Symbol": symbol.upper(),
+            "Name": symbol.upper(),
+            "Close": last_30_days['Close'].tolist() if 'Close' in last_30_days else [],
+            "Dates": last_30_days['Date'].dt.strftime('%Y-%m-%d').tolist() if 'Date' in last_30_days else [],
+            "Current": last_30_days['Close'].iloc[-1] if 'Close' in last_30_days else 0,
+            "Currency": "USD"
+        }
+
+        return data
+    except Exception as e:
+        logger.error(f"Error loading local stock data for {symbol}: {str(e)}")
+        return {}
 
 async def fetch_multiple_stocks(symbols: List[str]) -> Dict[str, Any]:
     """Fetch multiple stocks in parallel"""
     tasks = [fetch_stock_data(sym) for sym in symbols]
     results = await asyncio.gather(*tasks)
     return {sym: result for sym, result in zip(symbols, results) if result}
-
-async def analyze_stock_fundamentals_safe(symbol: str) -> dict:
-    """Fallback-safe fundamentals using available APIs"""
-    try:
-        # Try Twelve Data first
-        twelve_data = await fetch_twelve_data(symbol, 1)
-        if twelve_data:
-            return {
-                "pe_ratio": None,  # Twelve Data doesn't provide this
-                "peg_ratio": None,
-                "debt_equity": None,
-                "roe": None,
-                "dividend": None,
-                "beta": None,
-                "profit_margins": None,
-                "recommendation": None,
-                "target_price": None,
-                "current_price": twelve_data["Current"]
-            }
-            
-        # Fallback to Alpha Vantage
-        alpha_data = await fetch_alpha_vantage_data(symbol, 1)
-        if alpha_data:
-            return {
-                "pe_ratio": None,  # Alpha Vantage requires separate endpoint
-                "peg_ratio": None,
-                "debt_equity": None,
-                "roe": None,
-                "dividend": None,
-                "beta": None,
-                "profit_margins": None,
-                "recommendation": None,
-                "target_price": None,
-                "current_price": alpha_data["Current"]
-            }
-            
-        return {}
-    except Exception as e:
-        print(f"❌ Fundamental fetch failed for {symbol}: {str(e)}")
-        return {}
 
 def get_risk_category(risk_score: int) -> str:
     """Categorize risk tolerance"""
@@ -382,7 +388,6 @@ async def fetch_crypto_price(symbol: str) -> str:
     """Fetch cryptocurrency price from Binance"""
     clean_symbol = symbol.replace(r"\W+", "", symbol).upper() + "USDT"
     try:
-        print(f"💰 Fetching crypto price for {symbol}")
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 f"https://api.binance.com/api/v3/ticker/price?symbol={clean_symbol}",
@@ -390,11 +395,10 @@ async def fetch_crypto_price(symbol: str) -> str:
             )
         data = response.json()
         if 'price' in data:
-            print(f"✅ Crypto price fetched: {data['price']}")
             return f"🚀 **{symbol.upper()} Price**: **${data['price']}**"
         return ""
     except Exception as e:
-        print(f"❌ Crypto price error: {str(e)}")
+        logger.error(f"Crypto price error: {str(e)}")
         return ""
 
 async def fetch_stock_price(symbol: str) -> str:
@@ -465,7 +469,7 @@ async def fetch_stock_price(symbol: str) -> str:
                     return f"📈 **{symbol} Price**: **${close_price}** (as of {latest_date})"
                     
         except Exception as e:
-            print(f"⚠️ {api_name} price fetch failed: {str(e)}")
+            logger.warning(f"{api_name} price fetch failed: {str(e)}")
             continue
     
     return f"⚠️ Sorry, couldn't fetch price for **{symbol}** right now."
@@ -477,7 +481,6 @@ async def fetch_currency_rates(base: str = "USD", target: str = "EUR") -> str:
         return "⚠️ Alpha Vantage API key not configured"
     
     try:
-        print(f"💱 Fetching currency rates: {base} to {target}")
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 "https://www.alphavantage.co/query",
@@ -492,14 +495,11 @@ async def fetch_currency_rates(base: str = "USD", target: str = "EUR") -> str:
         data = response.json()
         if "Realtime Currency Exchange Rate" in data:
             rate = data["Realtime Currency Exchange Rate"]["5. Exchange Rate"]
-            print(f"✅ Currency rate fetched: 1 {base} = {rate} {target}")
             return f"💱 **Exchange Rate**: **1 {base} = {rate} {target}**"
         else:
-            error_msg = data.get("Error Message", "No exchange rate data")
-            print(f"❌ Currency error: {error_msg}")
             return ""
     except Exception as e:
-        print(f"❌ Currency error: {str(e)}")
+        logger.error(f"Currency error: {str(e)}")
         return ""
 
 async def fetch_metal_prices(metal: str) -> str:
@@ -514,7 +514,6 @@ async def fetch_metal_prices(metal: str) -> str:
         return f"⚠️ Unknown metal: {metal}"
     
     try:
-        print(f"🥇 Fetching metal price for {metal}")
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 "https://finnhub.io/api/v1/quote",
@@ -526,13 +525,11 @@ async def fetch_metal_prices(metal: str) -> str:
             )
         data = response.json()
         if "c" in data:
-            print(f"✅ Metal price fetched: ${data['c']} per ounce")
             return f"🥇 **{metal.capitalize()} Price**: **${data['c']} per ounce**"
         else:
-            print(f"❌ Metal price error: {data.get('error', 'No price data')}")
             return ""
     except Exception as e:
-        print(f"❌ Metal price error: {str(e)}")
+        logger.error(f"Metal price error: {str(e)}")
         return ""
 
 async def fetch_finance_news() -> str:
@@ -542,7 +539,6 @@ async def fetch_finance_news() -> str:
         return "⚠️ Mediastack API key not configured"
     
     try:
-        print("📰 Fetching financial news")
         async with httpx.AsyncClient() as client:
             response = await client.get(
                 "http://api.mediastack.com/v1/news",
@@ -557,39 +553,36 @@ async def fetch_finance_news() -> str:
         data = response.json()
         if "data" in data and data["data"]:
             articles = data["data"]
-            print(f"✅ Retrieved {len(articles)} news articles")
             news_items = [
                 f"📰 **{art['title']}**\n{art['description']}\n🔗 [Read more]({art['url']})"
                 for art in articles
             ]
             return "📢 **Latest Financial News**:\n\n" + "\n\n".join(news_items)
         else:
-            error_msg = data.get("error", "No news data")
-            print(f"❌ News error: {error_msg}")
             return ""
     except Exception as e:
-        print(f"❌ News error: {str(e)}")
+        logger.error(f"News error: {str(e)}")
         return ""
 
 def analyze_sentiment(text: str) -> str:
     """Analyze text sentiment using TextBlob"""
-    print(f"😊 Analyzing sentiment for: {text[:50]}...")
     analysis = TextBlob(text)
     if analysis.sentiment.polarity > 0.1:
-        sentiment = "😊 Positive"
+        return "😊 Positive"
     elif analysis.sentiment.polarity < -0.1:
-        sentiment = "😞 Negative"
-    else:
-        sentiment = "😐 Neutral"
-    print(f"✅ Sentiment: {sentiment}")
-    return sentiment
+        return "😞 Negative"
+    return "😐 Neutral"
 
 # === Enhanced Recommendation Engine ===
 async def generate_stock_recommendation(user_profile: dict) -> str:
     """Generate personalized stock recommendation with parallel data fetching"""
     risk = user_profile.get("riskTolerance", 5)
     investment_horizon = user_profile.get("investmentHorizon", 5)
-    print(f"📈 Generating stock recommendation for risk level: {risk}/10")
+    
+    # Load AI insights
+    ai_insights = load_ai_insights()
+    predicted_return = ai_insights["predicted_returns"].get("stocks", "N/A")
+    volatility = ai_insights["market_volatility"].get("stocks", "N/A")
     
     # Determine risk category
     risk_category = get_risk_category(risk)
@@ -611,7 +604,6 @@ async def generate_stock_recommendation(user_profile: dict) -> str:
         current_price = data['Current']
         trend = ((prices[-1] - prices[0]) / prices[0]) * 100
         volatility = pd.Series(prices).pct_change().std() * 100
-        fundamentals = await analyze_stock_fundamentals_safe(symbol)
         technicals = calculate_technical_metrics(prices)
         
         # Skip if too volatile for category
@@ -620,24 +612,18 @@ async def generate_stock_recommendation(user_profile: dict) -> str:
             
         # Calculate composite score
         score = 0
-        if fundamentals.get('peg_ratio') and fundamentals['peg_ratio'] < 2:
-            score += 3
-        if fundamentals.get('pe_ratio') and fundamentals['pe_ratio'] < 25:
-            score += 2
-        if fundamentals.get('roe') and fundamentals['roe'] > 15:
-            score += 2
-        if fundamentals.get('recommendation') and fundamentals['recommendation'] == "Buy":
-            score += 2
         if technicals.get('trend_slope') and technicals['trend_slope'] > 0:
-            score += 1
+            score += 3
+        if technicals.get('rsi') and 30 < technicals['rsi'] < 70:
+            score += 2
+        if current_price > technicals.get('sma_20', 0):
+            score += 2
             
         candidates.append({
             "symbol": symbol,
-            "name": data.get('Name', symbol),
             "price": current_price,
             "trend": trend,
             "volatility": volatility,
-            "fundamentals": fundamentals,
             "technicals": technicals,
             "score": score
         })
@@ -647,26 +633,15 @@ async def generate_stock_recommendation(user_profile: dict) -> str:
     
     # Select best candidate
     best_stock = sorted(candidates, key=lambda x: x['score'], reverse=True)[0]
-    fundamentals = best_stock['fundamentals']
     technicals = best_stock['technicals']
     
     # Generate recommendation report
     report = (
         f"📈 **Recommendation for {risk_category.title()} Investor**\n\n"
-        f"**{best_stock['name']} ({best_stock['symbol']})**\n"
+        f"**{best_stock['symbol']}**\n"
         f"Current Price: ${best_stock['price']:.2f}\n"
         f"30-Day Trend: {best_stock['trend']:.1f}%\n"
         f"Volatility: {best_stock['volatility']:.1f}%\n\n"
-        f"📊 **Fundamentals**\n"
-        f"- P/E Ratio: {fundamentals.get('pe_ratio', 'N/A'):.1f}\n"
-        f"- PEG Ratio: {fundamentals.get('peg_ratio', 'N/A'):.1f}\n"
-        f"- ROE: {fundamentals.get('roe', 'N/A'):.1f}%\n"
-        f"- Dividend Yield: {fundamentals.get('dividend', 0):.1f}%\n"
-        f"- Debt/Equity: {fundamentals.get('debt_equity', 'N/A'):.2f}\n"
-        f"- Beta: {fundamentals.get('beta', 'N/A'):.2f}\n"
-        f"- Profit Margins: {fundamentals.get('profit_margins', 'N/A'):.1f}%\n"
-        f"- Target Price: ${fundamentals.get('target_price', 'N/A'):.2f}\n"
-        f"- Analyst Consensus: {fundamentals.get('recommendation', 'N/A')}\n\n"
         f"📉 **Technical Indicators**\n"
         f"- 10-Day SMA: ${technicals.get('sma_10', 'N/A'):.2f}\n"
         f"- 20-Day SMA: ${technicals.get('sma_20', 'N/A'):.2f}\n"
@@ -682,12 +657,41 @@ async def generate_stock_recommendation(user_profile: dict) -> str:
         f"\n\n🔮 **Portfolio Advice**\n"
         f"- Consider allocating {category_data['allocation']} to this position\n"
         f"- Ideal for {horizon_advice} ({investment_horizon} year horizon)\n"
-        f"- Monitor quarterly earnings reports for performance updates\n"
-        f"- Set stop-loss at {best_stock['price'] * 0.9:.2f} (10% below current)"
+        f"- Set stop-loss at {best_stock['price'] * 0.9:.2f} (10% below current)\n"
+        f"- Market-wide predicted return: {predicted_return}\n"
+        f"- Market volatility: {volatility}"
     )
     
-    print(f"✅ Recommendation generated: {best_stock['symbol']}")
     return report
+
+async def generate_asset_recommendation(asset_type: str, user_profile: dict) -> str:
+    """Generate recommendation for non-stock assets"""
+    # Load AI insights
+    ai_insights = load_ai_insights()
+    predicted_return = ai_insights["predicted_returns"].get(asset_type, "N/A")
+    volatility = ai_insights["market_volatility"].get(asset_type, "N/A")
+    
+    # Generate recommendation based on asset type
+    if asset_type == "real_estate":
+        return (
+            f"🏠 **Real Estate Investment Recommendation**\n\n"
+            f"- Predicted Return: {predicted_return}\n"
+            f"- Market Volatility: {volatility}\n\n"
+            "💡 **Why Real Estate?**\n"
+            "Real estate provides stable long-term growth and acts as a hedge against inflation. "
+            "Consider properties in developing areas with good infrastructure projects."
+        )
+    elif asset_type == "gold":
+        return (
+            f"🥇 **Gold Investment Recommendation**\n\n"
+            f"- Predicted Return: {predicted_return}\n"
+            f"- Market Volatility: {volatility}\n\n"
+            "💡 **Why Gold?**\n"
+            "Gold is a safe-haven asset that preserves value during market turmoil. "
+            "Allocate 5-10% of your portfolio to gold for diversification."
+        )
+    else:
+        return "⚠️ Unsupported asset type"
 
 # === Models ===
 class ChatRequest(BaseModel):
@@ -695,36 +699,78 @@ class ChatRequest(BaseModel):
     profile: Optional[Dict] = {}
     session_id: Optional[str] = ""
 
+class AdviceRequest(BaseModel):
+    profile: Dict
+    goal: str
+
 # === Routes ===
 @app.post("/chat")
 async def chat_with_bot(request: ChatRequest):
-    print("\n" + "="*50)
-    print(f"💬 New chat request: {request.message[:100]}...")
-    print(f"🧾 Session ID: {request.session_id or 'None'}")
-    print(f"👤 User profile: {json.dumps(request.profile, indent=2) if request.profile else 'None'}")
-    
     try:
         user_message = request.message.strip()
         profile = request.profile or {}
         session_id = request.session_id or ""
         
         if not user_message:
-            print("⚠️ Empty message received")
             raise HTTPException(status_code=400, detail="Empty message")
+        
+        # Create cache key
+        cache_key = hashlib.sha256(
+            f"{user_message}-{json.dumps(profile, sort_keys=True)}".encode()
+        ).hexdigest()
+        
+        # Return cached response if available
+        if cache_key in RESPONSE_CACHE:
+            return JSONResponse(content={
+                "output": RESPONSE_CACHE[cache_key],
+                "session_id": session_id
+            })
+        
+        # Get or create session history
+        async with SESSION_LOCK:
+            if session_id and session_id in SESSION_HISTORY:
+                conversation_history = SESSION_HISTORY[session_id]
+                # Maintain only last 3 exchanges (6 messages)
+                if len(conversation_history) > 6:
+                    conversation_history = conversation_history[-6:]
+            else:
+                # Generate new session ID
+                session_id = hashlib.sha256(f"{time.time()}{user_message}".encode()).hexdigest()[:16]
+                conversation_history = []
+            
+            # Update session history
+            conversation_history.append({"role": "user", "content": user_message})
+            SESSION_HISTORY[session_id] = conversation_history
         
         lower_msg = user_message.lower()
         
         # Check FAQs
         if lower_msg in FAQS:
-            print(f"ℹ️ FAQ matched: {lower_msg}")
+            response_text = FAQS[lower_msg]
+            RESPONSE_CACHE[cache_key] = response_text
             return JSONResponse(content={
-                "output": FAQS[lower_msg],
+                "output": response_text,
                 "session_id": session_id
             })
         
         # Analyze sentiment
         sentiment = analyze_sentiment(user_message)
         response_parts = [f"🔍 **Sentiment**: {sentiment}"]
+        
+        # Handle asset-specific recommendations
+        asset_query = None
+        if "real estate" in lower_msg or "property" in lower_msg:
+            asset_query = "real_estate"
+        elif "gold" in lower_msg or "precious metal" in lower_msg:
+            asset_query = "gold"
+        
+        if asset_query:
+            response_text = await generate_asset_recommendation(asset_query, profile)
+            RESPONSE_CACHE[cache_key] = response_text
+            return JSONResponse(content={
+                "output": response_text,
+                "session_id": session_id
+            })
         
         # Check for investment advice request
         investment_request = (
@@ -739,82 +785,96 @@ async def chat_with_bot(request: ChatRequest):
         )
         
         if investment_request:
-            print("🔍 Investment advice request detected")
             response_text = await generate_stock_recommendation(profile)
-            print(f"📤 Sending investment recommendation: {response_text[:100]}...")
+            RESPONSE_CACHE[cache_key] = response_text
             return JSONResponse(content={
                 "output": response_text,
                 "session_id": session_id
             })
         
         # Check for specific data requests
-        # Check for crypto
         if "crypto" in lower_msg or "bitcoin" in lower_msg or "btc" in lower_msg:
             crypto = "BTC" if "btc" in lower_msg else "ETH"
-            print(f"🔍 Crypto request detected: {crypto}")
             response_parts.append(await fetch_crypto_price(crypto))
         
-        # Check for stock
-        elif "stock" in lower_msg:
-            symbol = "AAPL"  # Default to Apple
+        if "stock" in lower_msg:
+            symbol = "AAPL"  # Default
             if "microsoft" in lower_msg or "msft" in lower_msg:
                 symbol = "MSFT"
             elif "google" in lower_msg or "googl" in lower_msg:
                 symbol = "GOOGL"
             elif "amazon" in lower_msg or "amzn" in lower_msg:
                 symbol = "AMZN"
-            print(f"🔍 Stock request detected: {symbol}")
             response_parts.append(await fetch_stock_price(symbol))
         
-        # Check for currency
-        elif "currency" in lower_msg or "exchange" in lower_msg:
-            print("🔍 Currency request detected")
+        if "currency" in lower_msg or "exchange" in lower_msg:
             response_parts.append(await fetch_currency_rates())
         
-        # Check for metals
-        elif "gold" in lower_msg or "silver" in lower_msg:
+        if "gold" in lower_msg or "silver" in lower_msg:
             metal = "gold" if "gold" in lower_msg else "silver"
-            print(f"🔍 Metal request detected: {metal}")
             response_parts.append(await fetch_metal_prices(metal))
         
-        # Check for news
-        elif "news" in lower_msg:
-            print("🔍 News request detected")
+        if "news" in lower_msg:
             response_parts.append(await fetch_finance_news())
         
         # If we have API responses, use them
         if len(response_parts) > 1:
             response_text = "\n\n".join(response_parts)
-            print(f"📤 Sending API-based response: {response_text[:100]}...")
+            RESPONSE_CACHE[cache_key] = response_text
             return JSONResponse(content={
                 "output": response_text,
                 "session_id": session_id
             })
         
         # Default financial advice using Gemini
-        print("🤖 Generating advice with Gemini")
-        prompt = (
-            "You are a certified financial advisor. "
-            "Provide concise investment advice (1-2 paragraphs). "
-            "Focus on stocks, ETFs, or long-term investments. "
-            f"User profile: {json.dumps(profile)}\n\n"
-            f"Question: {user_message}"
+        context_prompt = """
+You are an expert financial advisor. Follow these rules:
+
+1. Scope:
+   - Only respond to personal finance questions
+   - For non-finance topics: "I specialize in financial advice."
+
+2. Personalization:
+   - Consider user profile: {profile}
+   - Maintain conversational context
+
+3. Response Style:
+   - Be engaging and concise (2-3 sentences)
+   - Use natural language with occasional emojis
+
+CONVERSATION HISTORY:
+{history}
+
+USER QUESTION:
+"{current_message}"
+"""
+        # Format history for prompt
+        history_text = "\n".join(
+            [f"{msg['role'].capitalize()}: {msg['content']}" 
+            for msg in conversation_history[:-1]]
         )
         
-        print(f"📝 Gemini prompt: {prompt[:150]}...")
-        start_time = time.time()
-        response = model.generate_content(prompt)
-        gen_time = time.time() - start_time
+        formatted_prompt = context_prompt.format(
+            profile=json.dumps(profile, indent=2),
+            history=history_text,
+            current_message=user_message
+        )
+        
+        # Generate response
+        response = model.generate_content(formatted_prompt)
         response_text = response.text.strip()
-        print(f"✅ Gemini response generated in {gen_time:.2f}s: {response_text[:100]}...")
         
         # Add financial tip if response is short
         if len(response_text.split()) < 30:
             tip = FINANCIAL_TIPS[int(time.time()) % len(FINANCIAL_TIPS)]
-            print(f"💡 Adding financial tip: {tip}")
             response_text += f"\n\n💡 **Financial Tip**: {tip}"
         
-        print(f"📤 Sending Gemini response: {response_text[:100]}...")
+        # Update conversation history and cache
+        async with SESSION_LOCK:
+            conversation_history.append({"role": "assistant", "content": response_text})
+            SESSION_HISTORY[session_id] = conversation_history
+        
+        RESPONSE_CACHE[cache_key] = response_text
         return JSONResponse(content={
             "output": response_text,
             "session_id": session_id
@@ -822,44 +882,144 @@ async def chat_with_bot(request: ChatRequest):
         
     except Exception as e:
         logger.exception(f"Chat error: {str(e)}")
-        print(f"❌ Critical error: {str(e)}")
         return JSONResponse(
             content={"error": "Financial advice service unavailable. Please try again later."},
+            status_code=500
+        )
+
+@app.post("/generate-advice")
+async def generate_advice(request: AdviceRequest):
+    try:
+        profile = request.profile
+        goal = request.goal
+        
+        # Create cache key
+        cache_key = hashlib.sha256(
+            f"{goal}-{json.dumps(profile, sort_keys=True)}".encode()
+        ).hexdigest()
+        
+        # Return cached response if available
+        if cache_key in RESPONSE_CACHE:
+            return JSONResponse(content={"advice": RESPONSE_CACHE[cache_key]})
+        
+        # Load AI insights
+        ai_insights = load_ai_insights()
+        predicted_returns = ai_insights["predicted_returns"]
+        market_volatility = ai_insights["market_volatility"]
+        
+        # Build dynamic prompt
+        prompt = f"""
+You are a professional financial advisor. Your task:
+
+1. Analyze user's financial health:
+   - Income vs expenses
+   - Investment capacity
+   - Risk tolerance
+
+2. Provide goal-specific advice:
+"""
+        if goal == "investment":
+            prompt += (
+                "- Recommend ONE primary investment strategy\n"
+                "- Justify using income, lifestyle, risk tolerance\n"
+                "- Use engaging language with 1-2 relevant emojis\n"
+            )
+        else:  # life_management
+            prompt += (
+                "- Provide 3 personalized financial wellness tips\n"
+                "- Focus on budgeting, saving, and cost-cutting\n"
+                "- Use bullet points with simple language\n"
+            )
+            
+        prompt += f"""
+3. Use natural language without markdown
+
+USER PROFILE:
+"""
+        # Add profile details
+        profile_fields = [
+            ("Monthly Salary", profile.get("salary", "Not provided"), "EGP"),
+            ("Home Ownership", profile.get("homeOwnership", "Not specified")),
+            ("Utilities", profile.get("utilities", 0), "EGP"),
+            ("Transport", profile.get("transportCost", 0), "EGP"),
+            ("Recurring Expenses", profile.get("otherRecurring", "None")),
+            ("Lifestyle", profile.get("lifestyle", "Standard")),
+            ("Risk Tolerance", f"{profile.get('riskTolerance', 5)}/10"),
+            ("Dependents", profile.get("dependents", 0)),
+            ("Financial Goals", profile.get("financialGoals", "Not specified"))
+        ]
+        
+        for field in profile_fields:
+            prompt += f"- {field[0]}: {field[1]}"
+            if len(field) > 2:
+                prompt += f" {field[2]}"
+            prompt += "\n"
+        
+        # Add market insights
+        prompt += "\nMARKET INSIGHTS:\n"
+        for asset in ["real_estate", "stocks", "gold"]:
+            asset_return = predicted_returns.get(asset, "N/A")
+            asset_volatility = market_volatility.get(asset, "N/A")
+            prompt += (
+                f"- {asset.replace('_', ' ').title()}: "
+                f"Predicted Return = {asset_return}, "
+                f"Volatility = {asset_volatility}\n"
+            )
+        
+        prompt += "\nADVICE:"
+        
+        # Generate and cache response
+        response = model.generate_content(prompt)
+        response_text = response.text.strip()
+        RESPONSE_CACHE[cache_key] = response_text
+        
+        return JSONResponse(content={"advice": response_text})
+        
+    except Exception as e:
+        logger.exception(f"Advice generation error: {str(e)}")
+        return JSONResponse(
+            content={"error": "Financial planning service unavailable."},
             status_code=500
         )
 
 # === Health Check ===
 @app.get("/health")
 async def health_check():
-    print("🩺 Health check requested")
+    # Test API connectivity
+    api_status = {
+        "alpha_vantage": bool(APIS["alpha_vantage"]),
+        "finnhub": bool(APIS["finnhub"]),
+        "marketstack": bool(APIS["marketstack"]),
+        "twelve_data": bool(APIS["twelve_data"]),
+        "binance": bool(APIS["binance"]["key"]),
+        "mediastack": bool(APIS["mediastack"])
+    }
+    
+    # Test stock data loading
+    test_stock = await fetch_stock_data('AAPL', 1)
+    
     return {
         "status": "operational",
-        "version": "1.1.0",
+        "version": "2.0.0",
         "model": "gemini-1.5-flash",
-        "api_priority": PREFERRED_API_ORDER,
         "services": {
-            "alpha_vantage": bool(APIS["alpha_vantage"]),
-            "finnhub": bool(APIS["finnhub"]),
-            "marketstack": bool(APIS["marketstack"]),
-            "twelve_data": bool(APIS["twelve_data"]),
-            "binance": bool(APIS["binance"]["key"]),
-            "mediastack": bool(APIS["mediastack"])
+            "stock_data": bool(test_stock),
+            "ai_insights": os.path.exists(AI_INSIGHTS_PATH),
+            "api_connectivity": api_status
         },
         "cache_stats": {
             "response_cache": len(RESPONSE_CACHE),
             "stock_data_cache": len(STOCK_DATA_CACHE),
-            "fundamentals_cache": len(FUNDAMENTALS_CACHE)
-        },
-        "uptime": round(time.time() - app.startup_time, 2) if hasattr(app, 'startup_time') else 0
+            "fundamentals_cache": len(FUNDAMENTALS_CACHE),
+            "active_sessions": len(SESSION_HISTORY)
+        }
     }
 
 # === Startup ===
 @app.on_event("startup")
 async def startup_event():
     app.startup_time = time.time()
-    print("🚀 Application startup complete")
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting server...")
     uvicorn.run(app, host="0.0.0.0", port=8000)
