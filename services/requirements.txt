@@ -1,8 +1,38 @@
-fastapi==0.110.0
-uvicorn==0.29.0
-pydantic==2.6.4
-numpy==1.26.4
-pandas==2.2.2
-yfinance==0.2.37
-scikit-learn==1.4.2
-joblib==1.4.0
+# 🔧 Backend APIs
+fastapi
+flask
+uvicorn
+pydantic
+requests
+
+# 🧠 Machine Learning / Deep Learning
+torch
+torchvision
+torchaudio
+tensorflow
+keras
+numpy
+scipy
+scikit-learn
+pandas
+statsmodels
+prophet
+matplotlib
+seaborn
+
+# 🤖 Transformers & Optimization
+transformers
+accelerate
+bitsandbytes
+sentence-transformers
+textblob
+
+# 🗃️ MongoDB Integration
+pymongo
+motor
+
+# 🔐 Environment Management
+python-dotenv
+
+# 🧠 Optional: GPU monitoring (optional, comment out if not used)
+GPUtil
