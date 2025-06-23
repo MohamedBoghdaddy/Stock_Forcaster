@@ -1,33 +1,56 @@
+import os 
+import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from Stock_Forecaster import app as stock_app
-from chatbot.Gemini_Service import app as gemini_app
 
-app = FastAPI(title="Unified Financial AI API")
+# === Add project root to path ===
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(PROJECT_ROOT)
 
-# Add CORS to main app
+# === Import routers ===
+try:
+    from stock.stock_router import router as stock_router
+    from routes.chatbot_router import router as chatbot_router
+except ImportError as e:
+    print(f"❌ Import Error: {str(e)}")
+    sys.exit(1)
+
+# === Initialize FastAPI app ===
+app = FastAPI(
+    title="Unified Financial AI API",
+    version="1.0.0",
+    description="Combines Stock Forecasting and AI Chatbot for financial insights",
+    docs_url="/api/docs"
+)
+
+# === Setup CORS ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "*"],  # Allow all during dev
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Mount sub-apps
-app.mount("/stock", stock_app)
-app.mount("/chatbot", gemini_app)
+# === Register routes ===
+app.include_router(stock_router, prefix="/stock", tags=["Stock"])
+app.include_router(chatbot_router, prefix="/chatbot", tags=["Chatbot"])
+print("✅ Routers mounted: /stock, /chatbot")
 
-print("Sub-apps loaded:", app.routes)
-
-
+# === Health check endpoint ===
 @app.get("/")
 def root():
     return {
         "message": "🚀 Unified Stock Forecaster + AI Chatbot API is live",
-        "routes": ["/stock/predict", "/stock/historical", "/chatbot/chat", "/chatbot/health"]
+        "routes": [
+            "/stock/predict",
+            "/stock/historical",
+            "/chatbot/chat",
+            "/chatbot/health"
+        ]
     }
 
+# === Start server ===
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

@@ -186,7 +186,7 @@ def get_historical(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Historical fetch error: {str(e)}")
 
-
+ 
 @app.get("/metrics")
 def get_model_metrics(symbol: str = Query("AAPL")):
     try:

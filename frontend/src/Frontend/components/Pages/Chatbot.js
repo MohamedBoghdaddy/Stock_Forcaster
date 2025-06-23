@@ -5,14 +5,13 @@ import {
   faPaperPlane,
   faChartLine,
   faLightbulb,
+  faNewspaper,
+  faQuestionCircle,
 } from "@fortawesome/free-solid-svg-icons";
 import { DashboardContext } from "../../../context/DashboardContext";
 import "../styles/chatbot.css";
 
-const API_URL =
-  process.env.REACT_APP_API_URL ||
-  "http://127.0.0.1:8000" ||
-  "http://localhost:8000";
+const API_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
 const Chatbot = () => {
   const dashboardContext = useContext(DashboardContext);
@@ -20,24 +19,32 @@ const Chatbot = () => {
   const fetchProfile = dashboardContext?.actions?.fetchProfile;
   const messagesEndRef = useRef(null);
 
-  const [goal, setGoal] = useState("investment");
   const [messages, setMessages] = useState([
     {
       sender: "bot",
-      text: "Hi! I'm your AI Financial Advisor. What would you like help with?",
+      text: "Hi! I'm your AI Stock Advisor. Ask me about stocks, portfolios, or market news!",
     },
   ]);
   const [loading, setLoading] = useState(false);
   const [inputText, setInputText] = useState("");
   const [isTyping, setIsTyping] = useState(false);
   const [typingContent, setTypingContent] = useState("");
+  const [sessionId, setSessionId] = useState("");
 
   // Fetch profile if not already available
   useEffect(() => {
     if (!profile || Object.keys(profile).length === 0) {
       fetchProfile?.();
     }
+
+    // Initialize session ID
+    setSessionId(generateSessionId());
   }, [fetchProfile, profile]);
+
+  // Generate unique session ID
+  const generateSessionId = () => {
+    return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  };
 
   // Auto-scroll to bottom of messages
   useEffect(() => {
@@ -48,7 +55,7 @@ const Chatbot = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
 
-  const simulateTyping = (response) => {
+  const simulateTyping = (response, callback) => {
     setIsTyping(true);
     setTypingContent("");
     let index = 0;
@@ -58,41 +65,69 @@ const Chatbot = () => {
         index++;
       } else {
         clearInterval(typingInterval);
-        setMessages((prev) => [...prev, { sender: "bot", text: response }]);
+        if (callback) callback(response);
         setTypingContent("");
         setIsTyping(false);
       }
     }, 20);
   };
 
-  const sendProfile = async () => {
+  const generateStockAdvice = async () => {
     if (!profile || Object.keys(profile).length === 0) {
       setMessages((prev) => [
         ...prev,
-        { sender: "bot", text: "⚠️ Please complete your profile first." },
+        {
+          sender: "bot",
+          text: "⚠️ Please complete your profile first to get personalized stock recommendations.",
+        },
       ]);
       return;
     }
 
     setLoading(true);
-    const userMessage = `Generate ${goal.replace("_", " ")} plan`;
-    setMessages((prev) => [...prev, { sender: "user", text: userMessage }]);
-
-    const endpoint = `${API_URL}/chatbot/generate/${
-      goal === "life_management" ? "life" : "investment"
-    }`;
+    setMessages((prev) => [
+      ...prev,
+      { sender: "user", text: "Generate stock investment advice" },
+    ]);
 
     try {
-      const res = await axios.post(endpoint, profile);
-      const formatted = JSON.stringify(res.data, null, 2);
-      simulateTyping(formatted);
+      // Get token from localStorage
+      const token = localStorage.getItem("token");
+
+      // Updated endpoint and headers
+      const res = await axios.post(
+        `${API_URL}/generate/investment`,
+        {},
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      // Handle new response format
+      let adviceText = "";
+      if (res.data.investment_plan) {
+        // Format array as bullet points
+        adviceText = res.data.investment_plan
+          .map((item) => `• ${item}`)
+          .join("\n");
+      } else if (res.data.output) {
+        adviceText = res.data.output;
+      } else {
+        adviceText = "Received advice in an unexpected format.";
+      }
+
+      simulateTyping(adviceText, (fullResponse) => {
+        setMessages((prev) => [...prev, { sender: "bot", text: fullResponse }]);
+      });
     } catch (err) {
-      console.error(err);
+      console.error("Stock advice error:", err);
       setMessages((prev) => [
         ...prev,
         {
           sender: "bot",
-          text: "❌ Something went wrong while generating your plan.",
+          text: "❌ Couldn't generate stock advice. Please try again later.",
         },
       ]);
     } finally {
@@ -100,32 +135,78 @@ const Chatbot = () => {
     }
   };
 
-  const sendFreeText = async () => {
+  const sendMessage = async () => {
     if (!inputText.trim()) return;
 
-    setMessages((prev) => [...prev, { sender: "user", text: inputText }]);
+    const userMessage = inputText;
+    setMessages((prev) => [...prev, { sender: "user", text: userMessage }]);
     setLoading(true);
     setInputText("");
 
     try {
-      const res = await axios.post(`${API_URL}/chatbot/chat`, {
-        message: inputText,
-        profile: profile,
+      // Get token from localStorage
+      const token = localStorage.getItem("token");
+
+      // Updated request with token in headers
+      const res = await axios.post(
+        `${API_URL}/chatbot/chat`,
+        {
+          message: userMessage,
+          session_id: sessionId,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        }
+      );
+
+      // Store session ID if we got one back
+      if (res.data.session_id) {
+        setSessionId(res.data.session_id);
+      }
+
+      simulateTyping(res.data.output, (fullResponse) => {
+        setMessages((prev) => [...prev, { sender: "bot", text: fullResponse }]);
       });
-      const responseText = res.data?.output || "🤖 I didn't understand that";
-      simulateTyping(responseText);
     } catch (err) {
-      console.error(err);
+      console.error("Chat error:", err.response?.data || err.message);
       setMessages((prev) => [
         ...prev,
         {
           sender: "bot",
-          text: "❌ Something went wrong. Please try again.",
+          text: "❌ Service unavailable. Please try again later.",
         },
       ]);
     } finally {
       setLoading(false);
     }
+  };
+
+  const quickAction = (action) => {
+    let message = "";
+    switch (action) {
+      case "price":
+        message = "What's the current price of Apple stock?";
+        break;
+      case "recommend":
+        message = "Recommend stocks based on my risk profile";
+        break;
+      case "news":
+        message = "Show me the latest stock market news";
+        break;
+      case "faq":
+        message = "How do I analyze stocks?";
+        break;
+      default:
+        return;
+    }
+
+    setInputText(message);
+    setTimeout(() => {
+      sendMessage();
+      scrollToBottom();
+    }, 300);
   };
 
   const formatMessage = (text) => {
@@ -140,8 +221,8 @@ const Chatbot = () => {
             <FontAwesomeIcon icon={faChartLine} />
           </div>
           <div>
-            <h1>AI Financial Advisor</h1>
-            <p className="subtitle">Ask anything about finances</p>
+            <h1>AI Stock Advisor</h1>
+            <p className="subtitle">Expert stock market advice and analysis</p>
           </div>
         </div>
       </div>
@@ -175,19 +256,17 @@ const Chatbot = () => {
             <FontAwesomeIcon icon={faLightbulb} /> Quick Actions
           </h3>
           <div className="action-buttons">
-            <button onClick={() => setGoal("investment") || sendProfile()}>
-              Investment Plan
+            <button onClick={() => quickAction("price")} disabled={loading}>
+              <FontAwesomeIcon icon={faChartLine} /> Stock Price
             </button>
-            <button onClick={() => setGoal("life_management") || sendProfile()}>
-              Life Management
+            <button onClick={generateStockAdvice} disabled={loading}>
+              <FontAwesomeIcon icon={faLightbulb} /> Get Recommendations
             </button>
-            <button
-              onClick={() => {
-                setInputText("Show me investment opportunities");
-                setTimeout(sendFreeText, 300);
-              }}
-            >
-              Investment Ideas
+            <button onClick={() => quickAction("news")} disabled={loading}>
+              <FontAwesomeIcon icon={faNewspaper} /> Market News
+            </button>
+            <button onClick={() => quickAction("faq")} disabled={loading}>
+              <FontAwesomeIcon icon={faQuestionCircle} /> Stock FAQs
             </button>
           </div>
         </div>
@@ -196,14 +275,14 @@ const Chatbot = () => {
           <div className="input-group">
             <input
               type="text"
-              placeholder="Ask a question..."
+              placeholder="Ask about stocks, portfolios, or market trends..."
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && sendFreeText()}
+              onKeyDown={(e) => e.key === "Enter" && !loading && sendMessage()}
               disabled={loading}
             />
             <button
-              onClick={sendFreeText}
+              onClick={sendMessage}
               disabled={loading || !inputText.trim()}
               className="send-button"
             >
