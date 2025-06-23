@@ -35,19 +35,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# === Create main app ===
-app = FastAPI()
-
-# CORS configuration
-origins = ["http://localhost:3000"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # === Gemini Configuration ===
 try:
     genai.configure(api_key=GEMINI_API_KEY)
@@ -130,8 +117,8 @@ APIS = {
 # === Path Constants ===
 AI_INSIGHTS_PATH = "ai_insights.json"
 LOCAL_STOCK_DATASET_PATH = "stocks_dataset"  # Updated path
-MODEL_PATH = "rf_model.pkl"  # Updated path
-SCALER_PATH = "rf_scaler.pkl"  # Updated path
+MODEL_PATH = "model/rf_model.pkl"  # Updated path
+SCALER_PATH = "model/rf_scaler.pkl"  # Updated path
 
 # ========================
 # === Helper Functions ===
@@ -725,7 +712,7 @@ class AdviceRequest(BaseModel):
 # =========================
 # === Financial Advice Routes ===
 # =========================
-@app.post("/generate/investment")
+@router.post("/generate/investment")
 async def generate_investment_advice(request: Request):
     logger.info("🚀 /generate/investment route HIT")
     try:
@@ -767,7 +754,7 @@ async def generate_investment_advice(request: Request):
 # =====================
 # === Chatbot Routes ===
 # =====================
-@app.post("/chatbot/chat")
+@router.post("/chatbot/chat")
 async def chat_with_bot(request: ChatRequest, authorization: str = Depends(lambda x: x.headers.get("Authorization"))):
     logger.info("🚀 /chatbot/chat route HIT")
     try:
@@ -930,7 +917,7 @@ USER QUESTION:
             status_code=500
         )
 
-@app.post("/chatbot/generate/{goal}")
+@router.post("/chatbot/generate/{goal}")
 async def generate_goal_advice(goal: str, authorization: str = Depends(lambda x: x.headers.get("Authorization"))):
     logger.info(f"🚀 /chatbot/generate/{goal} route HIT")
     try:
@@ -1001,7 +988,7 @@ ADVICE:
 # ===================
 # === Health Check ===
 # ===================
-@app.get("/health")
+@router.get("/health")
 async def health_check():
     logger.info("🩺 /health route HIT")
     try:
@@ -1044,7 +1031,7 @@ async def health_check():
 # ===============
 # === Startup ===
 # ===============
-@app.on_event("startup")
+@router.on_event("startup")
 async def startup_event():
     logger.info("🚀 Service starting up...")
     try:

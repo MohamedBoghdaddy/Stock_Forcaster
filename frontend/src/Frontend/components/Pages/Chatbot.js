@@ -96,7 +96,7 @@ const Chatbot = () => {
 
       // Updated endpoint and headers
       const res = await axios.post(
-        `${API_URL}/generate/investment`,
+        `${API_URL}/chatbot/generate/investment`,
         {},
         {
           headers: {
