@@ -143,14 +143,10 @@ def load_ai_insights() -> Dict[str, Dict]:
     # Default values if file can't be loaded
     return {
         "predicted_returns": {
-            "gold": "6.2%",
             "stocks": "8.9%",
-            "real_estate": "7.15%"
         },
         "market_volatility": {
-            "gold": "0.02",
             "stocks": "0.06",
-            "real_estate": "0.01"
         }
     }
 
