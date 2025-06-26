@@ -1,5 +1,4 @@
-from fastapi import FastAPI, Query, HTTPException, APIRouter
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Query, HTTPException, APIRouter
 from fastapi.responses import JSONResponse
 import pandas as pd
 import yfinance as yf
@@ -52,22 +51,7 @@ APIS = {
 }
 
 # === Setup ===
-app = FastAPI(
-    title="Enhanced Stock Analysis API",
-    description="Comprehensive API for stock market data analysis, predictions, and technical indicators",
-    version="3.0.0"
-)
-
-router = APIRouter(prefix="/api/stocks", tags=["Stocks"])
-app.include_router(router)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+router = APIRouter(prefix="/stocks", tags=["Stocks"])  # ✅ Keep router at top
 
 # === Configuration ===
 MODEL_DIR = "checkpoints"
@@ -609,6 +593,43 @@ def train_and_save_model(symbol: str) -> bool:
         return False
 
 # === API Endpoints ===
+@router.get("/historical")  # ✅ Keep the historical endpoint
+async def get_stock_history(symbol: str, period: str = "1mo"):
+    try:
+        # Determine date range based on period
+        end_date = datetime.today()
+        if period.endswith('d'):
+            days = int(period[:-1])
+            start_date = end_date - timedelta(days=days)
+        elif period.endswith('wk'):
+            weeks = int(period[:-2])
+            start_date = end_date - timedelta(weeks=weeks)
+        elif period.endswith('mo'):
+            months = int(period[:-2])
+            start_date = end_date - timedelta(days=months*30)
+        elif period.endswith('y'):
+            years = int(period[:-1])
+            start_date = end_date - timedelta(days=years*365)
+        else:
+            raise ValueError("Invalid period format")
+            
+        # Fetch data
+        df = fetch_stock_data(
+            symbol, 
+            start_date.strftime('%Y-%m-%d'), 
+            end_date.strftime('%Y-%m-%d')
+        )
+        
+        if df is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No data available for {symbol} in period {period}"
+            )
+            
+        return df.to_dict(orient="records")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/predict")
 def predict(
     symbol: str = Query("AAPL", description="Stock ticker symbol"),
@@ -684,37 +705,6 @@ def predict(
             detail=f"Prediction error: {str(e)}"
         )
 
-@router.get("/historical")
-def get_historical_data(
-    symbol: str = Query("AAPL", description="Stock ticker symbol"),
-    start: str = Query((datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d"), 
-        description="Start date (YYYY-MM-DD)"),
-    end: str = Query(datetime.today().strftime("%Y-%m-%d"), 
-        description="End date (YYYY-MM-DD)"),
-    interval: str = Query("1d", description="Data interval (1d, 1wk, 1mo)")
-):
-    """
-    Get historical stock data with technical indicators
-    """
-    try:
-        df = fetch_stock_data(symbol, start, end, interval)
-        if df is None or df.empty:
-            raise HTTPException(
-                status_code=404,
-                detail=f"No data available for {symbol} between {start} and {end}"
-            )
-            
-        return JSONResponse(
-            content=df.to_dict(orient="records"),
-            status_code=200
-        )
-    except Exception as e:
-        logger.exception("Historical data error")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Historical data error: {str(e)}"
-        )
-
 @router.get("/health")
 def health_check():
     """System health check"""
@@ -776,9 +766,5 @@ def initialize_models():
             
     logger.info("✅ Model initialization complete")
 
-# Run model initialization when the app starts
+# Run model initialization when the module is loaded
 initialize_models()
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -1,6 +1,6 @@
-from fastapi import FastAPI, APIRouter, Request, HTTPException, Body, Depends
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 import google.generativeai as genai
@@ -18,24 +18,37 @@ from scipy.stats import linregress
 import joblib
 import numpy as np
 from datetime import datetime, timedelta
+from textblob import TextBlob
 
 # Load environment variables
 load_dotenv()
 
+# Initialize FastAPI app
+app = FastAPI(title="Stock Forecaster Chatbot API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize router
+router = APIRouter(prefix="/chatbot", tags=["Chatbot"])
+
+# === Configuration ===
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     raise RuntimeError("❌ GEMINI_API_KEY not set in environment")
 
-router = APIRouter(prefix="/chatbot", tags=["Chatbot"])
-
-# === Configure logging ===
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# === Gemini Configuration ===
+# Initialize Gemini
 try:
     genai.configure(api_key=GEMINI_API_KEY)
     gemini_model = genai.GenerativeModel("gemini-1.5-flash")
@@ -50,7 +63,7 @@ STOCK_DATA_CACHE = TTLCache(maxsize=200, ttl=3600)  # 1-hour cache
 SESSION_HISTORY = TTLCache(maxsize=1000, ttl=3600)  # 1-hour session cache
 SESSION_LOCK = asyncio.Lock()
 
-# === Stock Knowledge Base ===
+# === Financial Knowledge Base ===
 RISK_CATEGORIES = {
     "conservative": {
         "stocks": ["JNJ", "PG", "KO", "PEP", "WMT", "MCD", "T", "VZ", "SO", "DUK"],
@@ -78,26 +91,28 @@ RISK_CATEGORIES = {
     }
 }
 
-STOCK_TIPS = [
-    "📈 Invest in diversified stock portfolios to reduce risk",
-    "⏳ Consider dollar-cost averaging to reduce market timing risk",
-    "🌍 Diversify internationally to hedge against country-specific risks",
-    "📅 Rebalance your stock portfolio at least once per year",
-    "🔍 Research P/E ratios and growth rates before investing",
-    "💡 Focus on companies with sustainable competitive advantages",
-    "📉 Maintain a long-term perspective during market volatility",
-    "💰 Reinvest dividends to benefit from compound growth"
+FINANCIAL_TIPS = [
+    "💰 Save at least 20% of your income each month.",
+    "📉 Avoid impulse buying by waiting 24 hours before making a purchase.",
+    "📊 Invest in diversified assets to reduce risk.",
+    "🏦 Use high-yield savings accounts for emergency funds.",
+    "💳 Pay off high-interest debt as soon as possible to avoid extra fees.",
+    "📈 Consider dollar-cost averaging to reduce market timing risk.",
+    "🌍 Diversify internationally to hedge against country-specific risks.",
+    "📅 Rebalance your portfolio at least once per year.",
+    "🧾 Keep investment expenses below 0.5% of assets annually.",
+    "🛡️ Maintain 3-6 months of living expenses in cash equivalents."
 ]
 
-STOCK_FAQS = {
-    "how to analyze stocks": "🔍 Look at P/E ratio, growth rates, competitive advantage, and management quality",
-    "best long term stocks": "🌱 Consider companies with strong moats, consistent growth, and innovation",
-    "how much to invest in stocks": "📈 Allocate (100 - your age)% in stocks, e.g., 70% stocks if you're 30",
-    "when to sell stocks": "💸 Consider selling when fundamentals deteriorate or you reach price targets",
-    "how to pick stocks": "✅ Focus on companies with growing earnings, strong balance sheets, and good management",
-    "best stock sectors": "🚀 Technology and healthcare often show strong growth potential",
-    "stock market basics": "📊 Stocks represent ownership in companies. Prices fluctuate based on supply/demand",
-    "what affects stock prices": "📉 Company performance, economic conditions, interest rates, and market sentiment"
+FAQS = {
+    "how to save money": "💰 Save at least 20% of your income each month and avoid impulse purchases.",
+    "best way to invest": "📊 Diversify your investments and consider low-cost index funds.",
+    "how to improve credit score": "✅ Pay bills on time and keep credit utilization below 30%.",
+    "how to start budgeting": "📋 Track your expenses and allocate your income into savings, needs, and wants.",
+    "what is dollar cost averaging": "⏳ Invest fixed amounts regularly to reduce market timing risk.",
+    "how much to invest in stocks": "📈 Allocate (100 - your age)% in stocks, e.g., 70% stocks if you're 30.",
+    "best long term investments": "🌱 Consider index funds, blue-chip stocks, and real estate for long-term growth.",
+    "how to analyze stocks": "🔍 Look at P/E ratio, growth rates, competitive advantage, and management quality."
 }
 
 # === API Configuration ===
@@ -109,6 +124,7 @@ PREFERRED_API_ORDER = [
 
 APIS = {
     "alpha_vantage": os.getenv("ALPHA_VANTAGE_API_KEY"),
+    "finnhub": os.getenv("FINNHUB_API_KEY"),
     "marketstack": os.getenv("MARKETSTACK_API_KEY"),
     "twelve_data": os.getenv("TWELVE_DATA_API_KEY"),
     "mediastack": os.getenv("MEDIASTACK_API_KEY"),
@@ -116,30 +132,46 @@ APIS = {
 
 # === Path Constants ===
 AI_INSIGHTS_PATH = "ai_insights.json"
-LOCAL_STOCK_DATASET_PATH = "stocks_dataset"  # Updated path
-MODEL_PATH = "model/rf_model.pkl"  # Updated path
-SCALER_PATH = "model/rf_scaler.pkl"  # Updated path
+MODEL_PATH = "model/rf_model.pkl"
+SCALER_PATH = "model/rf_scaler.pkl"
 
 # ========================
 # === Helper Functions ===
 # ========================
 def build_prompt(user_input: dict, goal: str) -> str:
-    """Build prompt for financial advice (stocks only)"""
+    """Build prompt for financial advice"""
     logger.info("🔧 Building financial advice prompt")
-    income = user_input.get("income", "0")
-    savings = user_input.get("savingAmount", "0")
+
+    # Extract key fields with fallbacks
+    income = user_input.get("salary") or user_input.get("income", "0")
+    expenses = user_input.get("totalMonthlyExpenses", "0")
+    savings = user_input.get("savingAmount") or (str(float(income) - float(expenses)) if income and expenses else "0")
     predictions = user_input.get("modelPredictions", {})
     volatility = user_input.get("marketVolatility", {})
+    risk = user_input.get("riskTolerance", "5")
+    horizon = user_input.get("investmentHorizon", "3")
+    favorite_sectors = user_input.get("favoriteSectors", [])
+    past_stocks = user_input.get("previousInvestments", [])
+
+    # === Smart Enhancements ===
+    sector_focus = ", ".join(favorite_sectors) if favorite_sectors else "none specified"
+    past_investments = ", ".join(past_stocks) if past_stocks else "no known history"
 
     prompt = (
         "You are a professional financial advisor specialized in stocks and portfolio management.\n\n"
-        "Your task is to analyze the user's financial profile and return advice **only** based on their investment goals.\n\n"
+        "Your task is to analyze the user's financial profile and return advice based on their investment goals.\n\n"
         "Use predicted investment returns and market volatility to guide stock selection.\n"
+        "Consider their risk tolerance, investment horizon, preferences, and avoid repetition from past investments.\n"
         "Responses must be realistic, actionable, and tailored to the user.\n\n"
         "Respond in valid **JSON format only**.\n\n"
         "User Profile:\n"
         f"- Monthly Income: {income} EGP\n"
+        f"- Monthly Expenses: {expenses} EGP\n"
         f"- Monthly Savings: {savings} EGP\n"
+        f"- Risk Tolerance: {risk}\n"
+        f"- Investment Horizon: {horizon} years\n"
+        f"- Favorite Sectors: {sector_focus}\n"
+        f"- Previous Investments: {past_investments}\n"
         "\nPredicted Investment Returns:\n" +
         "".join([f"- {asset}: {value}\n" for asset, value in predictions.items()]) +
         "\nMarket Volatility:\n" +
@@ -148,13 +180,12 @@ def build_prompt(user_input: dict, goal: str) -> str:
         "### Respond only in this JSON format:\n"
         "{\n"
         "  \"investment_plan\": [\"...\"]\n"
-        "}\n"
-        "Focus exclusively on stock market investments."
+        "}"
     )
     return prompt
 
 def load_ai_insights() -> Dict[str, Dict]:
-    """Load predicted returns and volatility from file with caching"""
+    """Load predicted returns and volatility from file"""
     logger.info("📂 Loading AI insights...")
     try:
         if os.path.exists(AI_INSIGHTS_PATH):
@@ -190,146 +221,6 @@ async def fetch_user_profile(token: str) -> dict:
         logger.error(f"❌ Profile fetch error: {str(e)}")
         return {}
 
-async def fetch_twelve_data(symbol: str, days: int) -> dict:
-    """Fetch stock data from Twelve Data API"""
-    logger.info(f"🌐 Fetching Twelve Data for {symbol} ({days} days)")
-    api_key = APIS.get("twelve_data")
-    if not api_key:
-        logger.warning("❌ Twelve Data API key not configured")
-        return None
-        
-    params = {
-        "symbol": symbol,
-        "interval": "1day",
-        "outputsize": days,
-        "apikey": api_key
-    }
-    
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                "https://api.twelvedata.com/time_series",
-                params=params,
-                timeout=10
-            )
-            logger.debug(f"🔧 Twelve Data response status: {response.status_code}")
-            data = response.json()
-            
-        if "values" not in data:
-            logger.warning(f"⚠️ Twelve Data response missing 'values' key: {data}")
-            return None
-            
-        logger.info(f"✅ Successfully fetched Twelve Data for {symbol}")
-        closes = [float(item["close"]) for item in data["values"]]
-        volumes = [float(item["volume"]) for item in data["values"]]
-        highs = [float(item["high"]) for item in data["values"]]
-        lows = [float(item["low"]) for item in data["values"]]
-        
-        return {
-            "Close": closes,
-            "Volume": volumes,
-            "High": highs,
-            "Low": lows,
-            "Current": closes[-1]
-        }
-    except Exception as e:
-        logger.error(f"❌ Twelve Data error: {str(e)}")
-        return None
-
-async def fetch_marketstack_data(symbol: str, days: int) -> dict:
-    """Fetch stock data from Marketstack API"""
-    logger.info(f"🌐 Fetching Marketstack data for {symbol} ({days} days)")
-    api_key = APIS.get("marketstack")
-    if not api_key:
-        logger.warning("❌ Marketstack API key not configured")
-        return None
-        
-    params = {
-        "access_key": api_key,
-        "symbols": symbol,
-        "limit": days
-    }
-    
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                "http://api.marketstack.com/v1/eod",
-                params=params,
-                timeout=10
-            )
-            logger.debug(f"🔧 Marketstack response status: {response.status_code}")
-            data = response.json()
-            
-        if "data" not in data or not data["data"]:
-            logger.warning(f"⚠️ Marketstack response missing 'data' key: {data}")
-            return None
-            
-        logger.info(f"✅ Successfully fetched Marketstack data for {symbol}")
-        closes = [float(item["close"]) for item in data["data"]]
-        volumes = [float(item["volume"]) for item in data["data"]]
-        highs = [float(item["high"]) for item in data["data"]]
-        lows = [float(item["low"]) for item in data["data"]]
-        
-        return {
-            "Close": closes,
-            "Volume": volumes,
-            "High": highs,
-            "Low": lows,
-            "Current": closes[-1]
-        }
-    except Exception as e:
-        logger.error(f"❌ Marketstack error: {str(e)}")
-        return None
-
-async def fetch_alpha_vantage_data(symbol: str, days: int) -> dict:
-    """Fetch stock data from Alpha Vantage API"""
-    logger.info(f"🌐 Fetching Alpha Vantage data for {symbol} ({days} days)")
-    api_key = APIS.get("alpha_vantage")
-    if not api_key:
-        logger.warning("❌ Alpha Vantage API key not configured")
-        return None
-        
-    params = {
-        "function": "TIME_SERIES_DAILY_ADJUSTED",
-        "symbol": symbol,
-        "apikey": api_key,
-        "outputsize": "compact" if days <= 100 else "full"
-    }
-    
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(
-                "https://www.alphavantage.co/query",
-                params=params,
-                timeout=10
-            )
-            logger.debug(f"🔧 Alpha Vantage response status: {response.status_code}")
-            data = response.json()
-            
-        if "Time Series (Daily)" not in data:
-            logger.warning(f"⚠️ Alpha Vantage response missing time series: {data}")
-            return None
-            
-        logger.info(f"✅ Successfully fetched Alpha Vantage data for {symbol}")
-        time_series = data["Time Series (Daily)"]
-        sorted_dates = sorted(time_series.keys(), reverse=True)[:days]
-        
-        closes = [float(time_series[date]["4. close"]) for date in sorted_dates]
-        volumes = [float(time_series[date]["6. volume"]) for date in sorted_dates]
-        highs = [float(time_series[date]["2. high"]) for date in sorted_dates]
-        lows = [float(time_series[date]["3. low"]) for date in sorted_dates]
-        
-        return {
-            "Close": closes,
-            "Volume": volumes,
-            "High": highs,
-            "Low": lows,
-            "Current": closes[0]
-        }
-    except Exception as e:
-        logger.error(f"❌ Alpha Vantage error: {str(e)}")
-        return None
-
 async def fetch_stock_data(symbol: str, days: int = 30) -> dict:
     """Fetch stock data with robust fallback mechanism"""
     logger.info(f"📊 Fetching stock data for {symbol} ({days} days)")
@@ -338,26 +229,117 @@ async def fetch_stock_data(symbol: str, days: int = 30) -> dict:
         logger.info(f"♻️ Using cached stock data for {symbol}")
         return STOCK_DATA_CACHE[cache_key]
     
-    logger.info(f"🔍 No cache found for {symbol}, querying APIs...")
+    # Try APIs in preferred order
     for api_name in PREFERRED_API_ORDER:
         try:
             logger.info(f"🔁 Trying {api_name} for {symbol}")
             if api_name == "twelve_data":
-                data = await fetch_twelve_data(symbol, days)
-            elif api_name == "marketstack":
-                data = await fetch_marketstack_data(symbol, days)
-            elif api_name == "alpha_vantage":
-                data = await fetch_alpha_vantage_data(symbol, days)
+                api_key = APIS.get("twelve_data")
+                if not api_key: continue
+                    
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        "https://api.twelvedata.com/time_series",
+                        params={
+                            "symbol": symbol,
+                            "interval": "1day",
+                            "outputsize": days,
+                            "apikey": api_key
+                        },
+                        timeout=10
+                    )
+                data = response.json()
+                if "values" in data and data["values"]:
+                    logger.info(f"✅ Got data from Twelve Data for {symbol}")
+                    closes = [float(item["close"]) for item in data["values"]]
+                    volumes = [float(item["volume"]) for item in data["values"]]
+                    highs = [float(item["high"]) for item in data["values"]]
+                    lows = [float(item["low"]) for item in data["values"]]
+                    
+                    data = {
+                        "Close": closes,
+                        "Volume": volumes,
+                        "High": highs,
+                        "Low": lows,
+                        "Current": closes[-1]
+                    }
+                    STOCK_DATA_CACHE[cache_key] = data
+                    return data
             
-            if data:
-                logger.info(f"✅ Successfully got data from {api_name} for {symbol}")
-                STOCK_DATA_CACHE[cache_key] = data
-                return data
+            elif api_name == "marketstack":
+                api_key = APIS.get("marketstack")
+                if not api_key: continue
+                    
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        "http://api.marketstack.com/v1/eod",
+                        params={
+                            "access_key": api_key,
+                            "symbols": symbol,
+                            "limit": days
+                        },
+                        timeout=10
+                    )
+                data = response.json()
+                if "data" in data and data["data"]:
+                    logger.info(f"✅ Got data from Marketstack for {symbol}")
+                    stock_data = data["data"][0]
+                    closes = [float(item["close"]) for item in data["data"]]
+                    volumes = [float(item["volume"]) for item in data["data"]]
+                    highs = [float(item["high"]) for item in data["data"]]
+                    lows = [float(item["low"]) for item in data["data"]]
+                    
+                    data = {
+                        "Close": closes,
+                        "Volume": volumes,
+                        "High": highs,
+                        "Low": lows,
+                        "Current": closes[-1]
+                    }
+                    STOCK_DATA_CACHE[cache_key] = data
+                    return data
+            
+            elif api_name == "alpha_vantage":
+                api_key = APIS.get("alpha_vantage")
+                if not api_key: continue
+                    
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        "https://www.alphavantage.co/query",
+                        params={
+                            "function": "TIME_SERIES_DAILY_ADJUSTED",
+                            "symbol": symbol,
+                            "apikey": api_key,
+                            "outputsize": "compact" if days <= 100 else "full"
+                        },
+                        timeout=10
+                    )
+                data = response.json()
+                if "Time Series (Daily)" in data:
+                    logger.info(f"✅ Got data from Alpha Vantage for {symbol}")
+                    time_series = data["Time Series (Daily)"]
+                    sorted_dates = sorted(time_series.keys(), reverse=True)[:days]
+                    
+                    closes = [float(time_series[date]["4. close"]) for date in sorted_dates]
+                    volumes = [float(time_series[date]["6. volume"]) for date in sorted_dates]
+                    highs = [float(time_series[date]["2. high"]) for date in sorted_dates]
+                    lows = [float(time_series[date]["3. low"]) for date in sorted_dates]
+                    
+                    data = {
+                        "Close": closes,
+                        "Volume": volumes,
+                        "High": highs,
+                        "Low": lows,
+                        "Current": closes[0]
+                    }
+                    STOCK_DATA_CACHE[cache_key] = data
+                    return data
+                    
         except Exception as e:
             logger.warning(f"⚠️ {api_name} failed for {symbol}: {str(e)}")
             continue
     
-    logger.warning(f"⚠️ All APIs failed for {symbol}, trying Gemini fallback...")
+    logger.warning(f"⚠️ All APIs failed for {symbol}, using Gemini fallback...")
     try:
         prompt = f"""
         You are a financial data expert. Provide stock data for {symbol} for the last {days} days in JSON format:
@@ -370,7 +352,7 @@ async def fetch_stock_data(symbol: str, days: int = 30) -> dict:
         }}
         Make realistic estimates based on historical trends if needed.
         """
-        response = gemini_model.generate_content(prompt)  # Fixed: use gemini_model
+        response = gemini_model.generate_content(prompt)
         data = json.loads(response.text)
         logger.info(f"✅ Generated stock data for {symbol} using Gemini")
         STOCK_DATA_CACHE[cache_key] = data
@@ -463,7 +445,7 @@ async def fetch_stock_price(symbol: str) -> str:
     logger.warning(f"⚠️ All APIs failed for {symbol}, using Gemini")
     try:
         prompt = f"What is the current price of {symbol} stock? Respond ONLY with the price in USD."
-        response = gemini_model.generate_content(prompt)  # Fixed: use gemini_model
+        response = gemini_model.generate_content(prompt)
         return f"📈 {symbol} Price: ${response.text.strip()}"
     except Exception as e:
         logger.error(f"❌ Gemini price fetch failed: {str(e)}")
@@ -558,85 +540,114 @@ def load_prediction_model():
         return None, None
 
 async def predict_stock(symbol: str, days: int = 30) -> dict:
-    """Predict stock performance using ML model"""
+    """Predict stock performance using ML model with enhanced features"""
     logger.info(f"🔮 Predicting stock for {symbol}")
     model, scaler = load_prediction_model()
     if not model or not scaler:
         return {}
-    
+
     stock_data = await fetch_stock_data(symbol, days)
     if not stock_data or not stock_data.get("Close"):
         return {}
-    
+
     try:
-        # Prepare features
+        # === Feature Engineering: 9 Total ===
+        close = stock_data["Close"]
+        volume = stock_data["Volume"]
+        high = stock_data["High"]
+        low = stock_data["Low"]
+
         features = np.array([
-            stock_data["Close"][-1],  # latest close
-            np.mean(stock_data["Close"]),  # average price
-            np.std(stock_data["Close"]),  # volatility
-            stock_data["Volume"][-1],  # latest volume
-            np.mean(stock_data["Volume"])  # average volume
+            close[-1],                                 # latest close
+            np.mean(close),                            # average price
+            np.std(close),                             # volatility
+            volume[-1],                                # latest volume
+            np.mean(volume),                           # average volume
+            high[-1] - low[-1],                        # daily high-low range
+            close[-1] - close[-2] if len(close) > 1 else 0,  # price change
+            max(close) - min(close),                   # 30-day price range
+            np.corrcoef(close[-10:], volume[-10:])[0, 1] if len(close) > 10 else 0  # price-volume correlation
         ]).reshape(1, -1)
-        
-        # Scale features and predict
+
+        # 🔍 Normalize
         scaled_features = scaler.transform(features)
         prediction = model.predict(scaled_features)[0]
-        
+
+        # 🔎 Confidence logic
+        confidence = "High" if abs(prediction) > 0.05 else ("Medium" if abs(prediction) > 0.01 else "Low")
+
+        # 📉 Smart Risk Tag
+        risk_tag = "Low Risk" if np.std(close) < 1.5 else "High Risk"
+
+        # 💹 Add trend classification
+        trend_pct = ((close[-1] - close[0]) / close[0]) * 100
+        trend_direction = "Upward" if trend_pct > 0 else "Downward"
+
         return {
             "symbol": symbol,
             "predicted_return": f"{prediction:.2%}",
-            "confidence": "High" if abs(prediction) > 0.05 else "Medium"
+            "confidence": confidence,
+            "trend": trend_direction,
+            "trend_change": f"{trend_pct:.1f}%",
+            "risk_level": risk_tag
         }
     except Exception as e:
         logger.error(f"❌ Prediction failed for {symbol}: {str(e)}")
         return {}
 
+def analyze_sentiment(text: str) -> str:
+    """Analyze text sentiment using TextBlob"""
+    analysis = TextBlob(text)
+    if analysis.sentiment.polarity > 0.1:
+        return "😊 Positive"
+    elif analysis.sentiment.polarity < -0.1:
+        return "😞 Negative"
+    return "😐 Neutral"
+
 # ===================================
 # === Enhanced Recommendation Engine ===
 # ===================================
 async def generate_stock_recommendation(user_profile: dict) -> str:
-    """Generate personalized stock recommendation with improved analysis"""
-    logger.info("💡 Generating stock recommendation...")
+    """Generate personalized stock recommendation with enhanced intelligence"""
+    logger.info("\U0001f4a1 Generating stock recommendation...")
     risk = user_profile.get("riskTolerance", 5)
     investment_horizon = user_profile.get("investmentHorizon", 5)
-    logger.debug(f"👤 User profile - risk: {risk}, horizon: {investment_horizon}")
-    
+    favorite_sectors = user_profile.get("favoriteSectors", [])
+    recent_investments = user_profile.get("recentInvestments", [])
+
     ai_insights = load_ai_insights()
     predicted_return = ai_insights["predicted_returns"].get("stocks", "8.9%")
     volatility = ai_insights["market_volatility"].get("stocks", "0.06")
-    
+
     risk_category = get_risk_category(risk)
     category_data = RISK_CATEGORIES[risk_category]
-    logger.info(f"📊 Risk category: {risk_category} - {category_data['description']}")
-    
+    logger.info(f"\U0001f4ca Risk category: {risk_category} - {category_data['description']}")
+
     candidate_symbols = category_data["stocks"]
+    if favorite_sectors:
+        candidate_symbols = prioritize_by_sector(candidate_symbols, favorite_sectors)
+
     stocks_data = await fetch_multiple_stocks(candidate_symbols)
-    
-    # Add predictions
+
     predictions = {}
     for symbol in candidate_symbols:
         prediction = await predict_stock(symbol)
         if prediction:
             predictions[symbol] = prediction
-    
+
     candidates = []
-    logger.info(f"🔍 Processing {len(stocks_data)} candidate stocks")
     for symbol in candidate_symbols:
         data = stocks_data.get(symbol)
         if not data or not data.get('Close'):
             logger.warning(f"⚠️ Skipping {symbol} - no data")
             continue
-            
+
         prices = data['Close']
         current_price = data['Current']
         trend = ((prices[-1] - prices[0]) / prices[0]) * 100
         volatility_val = pd.Series(prices).pct_change().std() * 100
         technicals = calculate_technical_metrics(prices)
-        
-        if volatility_val > category_data["max_volatility"]:
-            logger.info(f"⚠️ Skipping {symbol} - too volatile ({volatility_val:.2f} > {category_data['max_volatility']})")
-            continue
-            
+
         score = 0
         if technicals.get('trend_slope') and technicals['trend_slope'] > 0:
             score += 3
@@ -646,15 +657,19 @@ async def generate_stock_recommendation(user_profile: dict) -> str:
             score += 2
         if current_price > technicals.get('sma_10', 0):
             score += 1
-            
+
         if symbol in predictions:
             pred = predictions[symbol]
             if pred['confidence'] == "High":
                 score += 3
+            elif pred['confidence'] == "Medium":
+                score += 2
             else:
                 score += 1
-            
-        logger.debug(f"📊 {symbol} score: {score} (price: ${current_price:.2f}, trend: {trend:.1f}%, volatility: {volatility_val:.1f}%)")
+
+        if symbol in recent_investments:
+            score -= 2  # discourage repetition
+
         candidates.append({
             "symbol": symbol,
             "price": current_price,
@@ -663,22 +678,40 @@ async def generate_stock_recommendation(user_profile: dict) -> str:
             "technicals": technicals,
             "score": score
         })
-    
+
     if not candidates:
-        logger.warning("⚠️ No suitable investments found")
-        return "No suitable investments found. Try again later."
-    
+        logger.warning("⚠️ No suitable investments found - fallback activated")
+        top_stocks = category_data["stocks"][:3]
+        stocks_data = await fetch_multiple_stocks(top_stocks)
+
+        report = (
+            f"\U0001f4c8 Top Recommendations for {risk_category.title()} Investor\n\n"
+            "Based on your risk profile, these stocks are well-suited:\n\n"
+        )
+        for symbol in top_stocks:
+            data = stocks_data.get(symbol)
+            if data and data.get('Current'):
+                report += f"- {symbol}: ${data['Current']:.2f}\n"
+
+        report += (
+            f"\nPortfolio Advice:\n"
+            f"- Allocate {category_data['allocation']}\n"
+            f"- Ideal for {'long-term' if investment_horizon > 3 else 'short-term'} investment\n"
+            f"- Predicted Market Return: {predicted_return}\n"
+            f"- Market Volatility: {volatility}"
+        )
+        return report
+
     best_stock = sorted(candidates, key=lambda x: x['score'], reverse=True)[0]
-    logger.info(f"🏆 Selected best stock: {best_stock['symbol']} with score {best_stock['score']}")
-    
-    # Add prediction to report if available
     prediction_info = ""
     if best_stock['symbol'] in predictions:
         pred = predictions[best_stock['symbol']]
-        prediction_info = f"\n📊 ML Prediction: {pred['predicted_return']} return ({pred['confidence']} confidence)"
-    
+        prediction_info = f"\n\U0001f4ca ML Prediction: {pred['predicted_return']} return ({pred['confidence']} confidence)"
+
+    chart_path = await generate_stock_chart(best_stock['symbol'])
+
     report = (
-        f"📈 Recommendation for {risk_category.title()} Investor\n\n"
+        f"\U0001f4c8 Recommendation for {risk_category.title()} Investor\n\n"
         f"Stock: {best_stock['symbol']}\n"
         f"Price: ${best_stock['price']:.2f}\n"
         f"30-Day Trend: {best_stock['trend']:.1f}%\n"
@@ -693,11 +726,40 @@ async def generate_stock_recommendation(user_profile: dict) -> str:
         f"- Allocate {category_data['allocation']}\n"
         f"- Ideal for {'long-term' if investment_horizon > 3 else 'short-term'} investment\n"
         f"- Predicted Market Return: {predicted_return}\n"
-        f"- Market Volatility: {volatility}"
+        f"- Market Volatility: {volatility}\n\n"
+        f"\U0001f4ca Chart: {chart_path if chart_path else 'Chart unavailable'}"
     )
-    
+
+    await update_user_memory(user_profile.get("user_id"), best_stock['symbol'])
     logger.info("✅ Stock recommendation generated")
     return report
+
+async def generate_asset_recommendation(asset_type: str, user_profile: dict) -> str:
+    """Generate recommendation for non-stock assets"""
+    ai_insights = load_ai_insights()
+    predicted_return = ai_insights["predicted_returns"].get(asset_type, "N/A")
+    volatility = ai_insights["market_volatility"].get(asset_type, "N/A")
+    
+    if asset_type == "real_estate":
+        return (
+            f"🏠 Real Estate Investment Recommendation\n\n"
+            f"- Predicted Return: {predicted_return}\n"
+            f"- Market Volatility: {volatility}\n\n"
+            "💡 Why Real Estate?\n"
+            "Real estate provides stable long-term growth and acts as a hedge against inflation. "
+            "Consider properties in developing areas with good infrastructure projects."
+        )
+    elif asset_type == "gold":
+        return (
+            f"🥇 Gold Investment Recommendation\n\n"
+            f"- Predicted Return: {predicted_return}\n"
+            f"- Market Volatility: {volatility}\n\n"
+            "💡 Why Gold?\n"
+            "Gold is a safe-haven asset that preserves value during market turmoil. "
+            "Allocate 5-10% of your portfolio to gold for diversification."
+        )
+    else:
+        return "⚠️ Unsupported asset type"
 
 # =====================
 # === Request Models ===
@@ -705,6 +767,7 @@ async def generate_stock_recommendation(user_profile: dict) -> str:
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = ""
+    profile: Optional[Dict] = {}
 
 class AdviceRequest(BaseModel):
     goal: str
@@ -715,209 +778,210 @@ class AdviceRequest(BaseModel):
 @router.post("/generate/investment")
 async def generate_investment_advice(request: Request):
     logger.info("🚀 /generate/investment route HIT")
+    
     try:
-        # Get authorization token
+        # 🔐 Extract and validate token
         auth_header = request.headers.get("Authorization")
         if not auth_header or not auth_header.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Missing or invalid authorization token")
-        
         token = auth_header.split(" ")[1]
-        
-        # Fetch user profile
+
+        # 👤 Fetch user profile
         profile = await fetch_user_profile(token)
         if not profile:
             raise HTTPException(status_code=404, detail="User profile not found")
-        
-        logger.info(f"👤 User profile: {profile}")
-        
-        # Build prompt with stock-only focus
+        logger.info(f"👤 User profile fetched successfully")
+
+        # ✨ Build prompt and call Gemini
         prompt = build_prompt(profile, "investment")
-        response = gemini_model.generate_content(prompt)  # Fixed: use gemini_model
+        response = gemini_model.generate_content(prompt)
         result_text = response.text
-        
+
+        # 🧹 Attempt to clean and parse JSON output
         try:
             cleaned = result_text.strip().removeprefix("```json").removesuffix("```").strip()
             result_json = json.loads(cleaned)
+
+            # 🧠 Format investment_plan if it's a list
+            if isinstance(result_json.get("investment_plan"), list):
+                formatted_plan = []
+                for item in result_json["investment_plan"]:
+                    if isinstance(item, dict):
+                        formatted_plan.append(f"• {item.get('recommendation', 'Investment advice')}")
+                    else:
+                        formatted_plan.append(f"• {item}")
+                result_json["investment_plan"] = formatted_plan
+
             logger.info("✅ /generate/investment SUCCESS")
             return JSONResponse(content=result_json, status_code=200)
+
         except json.JSONDecodeError:
-            logger.info("⚠️ /generate/investment returned plain text")
+            logger.warning("⚠️ /generate/investment returned plain text, not JSON")
             return JSONResponse(content={"output": result_text}, status_code=200)
-            
+
     except Exception as e:
         logger.error(f"❌ /generate/investment ERROR: {str(e)}")
-        return JSONResponse(
-            content={"error": str(e)}, 
-            status_code=500
-        )
+        return JSONResponse(content={"error": str(e)}, status_code=500)
 
-# =====================
-# === Chatbot Routes ===
-# =====================
-@router.post("/chatbot/chat")
-async def chat_with_bot(request: ChatRequest, authorization: str = Depends(lambda x: x.headers.get("Authorization"))):
-    logger.info("🚀 /chatbot/chat route HIT")
+
+# =========================
+# === Simplified Chat Endpoint ===
+# =========================
+@router.post("/chat")
+async def chat_with_bot(request: ChatRequest):
+    """Handle chatbot requests with robust error handling"""
     try:
         user_message = request.message.strip()
+        profile = request.profile or {}
         session_id = request.session_id or ""
-        logger.debug(f"📩 Message: {user_message}, Session: {session_id}")
         
         if not user_message:
-            logger.warning("⚠️ Empty message received")
             return JSONResponse(
-                content={"error": "Empty message"}, 
-                status_code=400
+                content={"output": "Please enter a valid question", "session_id": session_id},
+                status_code=200
             )
         
-        # Fetch user profile using authorization token
-        if not authorization or not authorization.startswith("Bearer "):
-            profile = {}
-        else:
-            token = authorization.split(" ")[1]
-            profile = await fetch_user_profile(token) or {}
-        
-        logger.debug(f"👤 User profile: {profile}")
-        
+        # Create cache key
         cache_key = hashlib.sha256(
             f"{user_message}-{json.dumps(profile, sort_keys=True)}".encode()
         ).hexdigest()
         
+        # Return cached response if available
         if cache_key in RESPONSE_CACHE:
-            logger.info("♻️ Serving response from cache")
-            logger.info("✅ /chatbot/chat SUCCESS (cached)")
             return JSONResponse(content={
                 "output": RESPONSE_CACHE[cache_key],
                 "session_id": session_id
-            }, status_code=200)
+            })
         
+        # Get or create session history
         async with SESSION_LOCK:
             if session_id and session_id in SESSION_HISTORY:
                 conversation_history = SESSION_HISTORY[session_id]
+                # Maintain only last 3 exchanges (6 messages)
                 if len(conversation_history) > 6:
                     conversation_history = conversation_history[-6:]
             else:
+                # Generate new session ID
                 session_id = hashlib.sha256(f"{time.time()}{user_message}".encode()).hexdigest()[:16]
                 conversation_history = []
             
+            # Update session history
             conversation_history.append({"role": "user", "content": user_message})
             SESSION_HISTORY[session_id] = conversation_history
         
         lower_msg = user_message.lower()
         
-        # FAQ handling
-        if lower_msg in STOCK_FAQS:
-            response_text = STOCK_FAQS[lower_msg]
+        # 1. Handle specific stock price requests
+        if "price of" in lower_msg or "stock price" in lower_msg:
+            symbol = "AAPL"  # Default
+            if "apple" in lower_msg or "aapl" in lower_msg:
+                symbol = "AAPL"
+            elif "microsoft" in lower_msg or "msft" in lower_msg:
+                symbol = "MSFT"
+            elif "google" in lower_msg or "googl" in lower_msg:
+                symbol = "GOOGL"
+            elif "amazon" in lower_msg or "amzn" in lower_msg:
+                symbol = "AMZN"
+                
+            price = await fetch_stock_price(symbol)
+            response_text = price
             RESPONSE_CACHE[cache_key] = response_text
-            logger.info("✅ /chatbot/chat SUCCESS (FAQ)")
             return JSONResponse(content={
                 "output": response_text,
                 "session_id": session_id
-            }, status_code=200)
+            })
         
-        # Stock price requests
-        stock_symbols = {
-            "apple": "AAPL", "microsoft": "MSFT", "google": "GOOGL",
-            "amazon": "AMZN", "tesla": "TSLA", "nvidia": "NVDA",
-            "meta": "META", "netflix": "NFLX", "amd": "AMD",
-            "intel": "INTC", "coca": "KO", "pepsi": "PEP", "walmart": "WMT"
-        }
+        # 2. Handle news requests
+        elif "news" in lower_msg or "market news" in lower_msg:
+            news = await fetch_finance_news()
+            response_text = news if news else "⚠️ No financial news available at the moment"
+            RESPONSE_CACHE[cache_key] = response_text
+            return JSONResponse(content={
+                "output": response_text,
+                "session_id": session_id
+            })
         
-        for keyword, symbol in stock_symbols.items():
-            if keyword in lower_msg:
-                response_text = await fetch_stock_price(symbol)
-                RESPONSE_CACHE[cache_key] = response_text
-                logger.info(f"✅ /chatbot/chat SUCCESS (Stock price: {symbol})")
-                return JSONResponse(content={
-                    "output": response_text,
-                    "session_id": session_id
-                }, status_code=200)
+        # 3. Check FAQs
+        elif lower_msg in FAQS:
+            response_text = FAQS[lower_msg]
+            RESPONSE_CACHE[cache_key] = response_text
+            return JSONResponse(content={
+                "output": response_text,
+                "session_id": session_id
+            })
         
-        # Investment advice
-        investment_triggers = [
-            "invest", "stock", "portfolio", "recommend", 
-            "which stock", "buy", "should i invest", "opportunity"
-        ]
+        # 4. Handle asset-specific recommendations
+        elif "real estate" in lower_msg or "property" in lower_msg:
+            response_text = await generate_asset_recommendation("real_estate", profile)
+            RESPONSE_CACHE[cache_key] = response_text
+            return JSONResponse(content={
+                "output": response_text,
+                "session_id": session_id
+            })
         
-        if any(trigger in lower_msg for trigger in investment_triggers):
+        elif "gold" in lower_msg or "precious metal" in lower_msg:
+            response_text = await generate_asset_recommendation("gold", profile)
+            RESPONSE_CACHE[cache_key] = response_text
+            return JSONResponse(content={
+                "output": response_text,
+                "session_id": session_id
+            })
+        
+        # 5. Handle investment advice requests
+        elif any(keyword in lower_msg for keyword in ["invest", "stock", "portfolio", "buy", "recommend"]):
             response_text = await generate_stock_recommendation(profile)
             RESPONSE_CACHE[cache_key] = response_text
-            logger.info("✅ /chatbot/chat SUCCESS (Investment advice)")
             return JSONResponse(content={
                 "output": response_text,
                 "session_id": session_id
-            }, status_code=200)
+            })
         
-        # News requests
-        if "news" in lower_msg or "update" in lower_msg:
-            response_text = await fetch_finance_news()
-            RESPONSE_CACHE[cache_key] = response_text
-            logger.info("✅ /chatbot/chat SUCCESS (News)")
-            return JSONResponse(content={
-                "output": response_text or "No stock news available",
-                "session_id": session_id
-            }, status_code=200)
-        
-        # Default Gemini response
+        # 6. Default financial advice using Gemini
         context_prompt = """
-You are an expert financial advisor specialized in stocks and investments. Follow these rules:
+You are an expert financial advisor. Follow these rules:
 
 1. Scope:
-   - Only respond to stock market and investment questions
-   - For non-finance topics: "I specialize in stock market advice"
+   - Only respond to personal finance questions
+   - For non-finance topics: "I specialize in financial advice."
 
-2. Personalization:
-   - Consider user profile: {profile}
-   - Maintain conversation context
-
-3. Response Style:
-   - Be concise (2-3 sentences)
+2. Response Style:
+   - Be engaging and concise (2-3 sentences)
    - Use natural language with occasional emojis
-   - Include one relevant stock tip if appropriate
-
-CONVERSATION HISTORY:
-{history}
+   - Provide actionable advice
 
 USER QUESTION:
 "{current_message}"
 """
-        history_text = "\n".join(
-            [f"{msg['role'].capitalize()}: {msg['content']}" 
-            for msg in conversation_history[:-1]]
-        )
+        formatted_prompt = context_prompt.format(current_message=user_message)
         
-        formatted_prompt = context_prompt.format(
-            profile=json.dumps(profile, indent=2),
-            history=history_text,
-            current_message=user_message
-        )
-        
-        response = gemini_model.generate_content(formatted_prompt)  # Fixed: use gemini_model
+        # Generate response
+        response = gemini_model.generate_content(formatted_prompt)
         response_text = response.text.strip()
         
-        # Add stock tip if response is short
+        # Add financial tip if response is short
         if len(response_text.split()) < 30:
-            tip = STOCK_TIPS[int(time.time()) % len(STOCK_TIPS)]
-            response_text += f"\n\n💡 Stock Tip: {tip}"
+            tip = FINANCIAL_TIPS[int(time.time()) % len(FINANCIAL_TIPS)]
+            response_text += f"\n\n💡 Financial Tip: {tip}"
         
+        # Update conversation history and cache
         async with SESSION_LOCK:
             conversation_history.append({"role": "assistant", "content": response_text})
             SESSION_HISTORY[session_id] = conversation_history
         
         RESPONSE_CACHE[cache_key] = response_text
-        logger.info("✅ /chatbot/chat SUCCESS (Gemini response)")
         return JSONResponse(content={
             "output": response_text,
             "session_id": session_id
-        }, status_code=200)
+        })
         
     except Exception as e:
-        logger.exception(f"❌ /chatbot/chat ERROR: {str(e)}")
+        logger.exception(f"Chat error: {str(e)}")
         return JSONResponse(
-            content={"error": "Service unavailable. Please try again later."},
+            content={"error": "Financial advice service unavailable. Please try again later."},
             status_code=500
         )
-
-@router.post("/chatbot/generate/{goal}")
+        
+@router.post("/generate/{goal}")
 async def generate_goal_advice(goal: str, authorization: str = Depends(lambda x: x.headers.get("Authorization"))):
     logger.info(f"🚀 /chatbot/generate/{goal} route HIT")
     try:
@@ -971,7 +1035,7 @@ USER PROFILE SUMMARY:
 
 ADVICE:
 """
-        response = gemini_model.generate_content(prompt)  # Fixed: use gemini_model
+        response = gemini_model.generate_content(prompt)
         response_text = response.text.strip()
         RESPONSE_CACHE[cache_key] = response_text
         
@@ -1028,17 +1092,10 @@ async def health_check():
             status_code=500
         )
 
-# ===============
-# === Startup ===
-# ===============
-@router.on_event("startup")
-async def startup_event():
-    logger.info("🚀 Service starting up...")
-    try:
-        logger.info("🔍 Preloading essential data...")
-        await fetch_stock_data('AAPL')
-        await fetch_finance_news()
-        load_prediction_model()
-        logger.info("✅ Service initialized successfully")
-    except Exception as e:
-        logger.error(f"❌ Startup failed: {str(e)}")
+# === Root Endpoint ===
+@app.get("/")
+async def root():
+    return {"message": "Stock Forecaster Chatbot API is running"}
+
+# Mount the router
+app.include_router(router)

@@ -31,22 +31,22 @@ const Chatbot = () => {
   const [typingContent, setTypingContent] = useState("");
   const [sessionId, setSessionId] = useState("");
 
-  // Fetch profile if not already available
   useEffect(() => {
+    console.log("📦 useEffect: checking profile and initializing session...");
     if (!profile || Object.keys(profile).length === 0) {
+      console.log("🔄 Fetching profile...");
       fetchProfile?.();
     }
 
-    // Initialize session ID
-    setSessionId(generateSessionId());
+    const newSessionId = generateSessionId();
+    console.log("🆕 Session ID initialized:", newSessionId);
+    setSessionId(newSessionId);
   }, [fetchProfile, profile]);
 
-  // Generate unique session ID
   const generateSessionId = () => {
     return `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   };
 
-  // Auto-scroll to bottom of messages
   useEffect(() => {
     scrollToBottom();
   }, [messages, isTyping]);
@@ -56,6 +56,7 @@ const Chatbot = () => {
   };
 
   const simulateTyping = (response, callback) => {
+    console.log("⏳ Simulating typing...");
     setIsTyping(true);
     setTypingContent("");
     let index = 0;
@@ -68,12 +69,16 @@ const Chatbot = () => {
         if (callback) callback(response);
         setTypingContent("");
         setIsTyping(false);
+        console.log("✅ Typing simulation finished.");
       }
     }, 20);
   };
 
   const generateStockAdvice = async () => {
+    console.log("📈 Requesting stock advice...");
+
     if (!profile || Object.keys(profile).length === 0) {
+      console.warn("⚠️ Profile missing, cannot generate advice");
       setMessages((prev) => [
         ...prev,
         {
@@ -91,10 +96,9 @@ const Chatbot = () => {
     ]);
 
     try {
-      // Get token from localStorage
       const token = localStorage.getItem("token");
+      console.log("🔐 Token retrieved:", token);
 
-      // Updated endpoint and headers
       const res = await axios.post(
         `${API_URL}/chatbot/generate/investment`,
         {},
@@ -105,10 +109,10 @@ const Chatbot = () => {
         }
       );
 
-      // Handle new response format
+      console.log("✅ Stock advice API response:", res.data);
+
       let adviceText = "";
       if (res.data.investment_plan) {
-        // Format array as bullet points
         adviceText = res.data.investment_plan
           .map((item) => `• ${item}`)
           .join("\n");
@@ -119,10 +123,11 @@ const Chatbot = () => {
       }
 
       simulateTyping(adviceText, (fullResponse) => {
+        console.log("💬 Final bot message:", fullResponse);
         setMessages((prev) => [...prev, { sender: "bot", text: fullResponse }]);
       });
     } catch (err) {
-      console.error("Stock advice error:", err);
+      console.error("❌ Stock advice error:", err);
       setMessages((prev) => [
         ...prev,
         {
@@ -139,15 +144,17 @@ const Chatbot = () => {
     if (!inputText.trim()) return;
 
     const userMessage = inputText;
+    console.log("📤 Sending message:", userMessage);
+
     setMessages((prev) => [...prev, { sender: "user", text: userMessage }]);
     setLoading(true);
     setInputText("");
 
     try {
-      // Get token from localStorage
       const token = localStorage.getItem("token");
+      console.log("🔐 Token used:", token);
+      console.log("📡 Sending to:", `${API_URL}/chatbot/chat`);
 
-      // Updated request with token in headers
       const res = await axios.post(
         `${API_URL}/chatbot/chat`,
         {
@@ -161,16 +168,19 @@ const Chatbot = () => {
         }
       );
 
-      // Store session ID if we got one back
+      console.log("✅ Chat response:", res.data);
+
       if (res.data.session_id) {
+        console.log("🔄 Updating session ID:", res.data.session_id);
         setSessionId(res.data.session_id);
       }
 
       simulateTyping(res.data.output, (fullResponse) => {
+        console.log("🤖 Bot reply complete:", fullResponse);
         setMessages((prev) => [...prev, { sender: "bot", text: fullResponse }]);
       });
     } catch (err) {
-      console.error("Chat error:", err.response?.data || err.message);
+      console.error("❌ Chat error:", err.response?.data || err.message);
       setMessages((prev) => [
         ...prev,
         {
@@ -184,6 +194,7 @@ const Chatbot = () => {
   };
 
   const quickAction = (action) => {
+    console.log("⚡ Quick action triggered:", action);
     let message = "";
     switch (action) {
       case "price":

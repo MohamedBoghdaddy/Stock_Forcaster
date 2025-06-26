@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import APIRouter, Request, HTTPException, Depends
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -23,15 +23,8 @@ from scipy.stats import linregress
 load_dotenv()
 
 # === Setup ===
-app = FastAPI(title="Financial Advisor Chatbot", version="2.0.0")
+router = APIRouter(prefix="/chatbot", tags=["Chatbot"])
 
-# CORS Configuration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # API Configuration
 PREFERRED_API_ORDER = [
@@ -128,7 +121,6 @@ FAQS = {
 }
 
 AI_INSIGHTS_PATH = "ai_insights.json"
-LOCAL_STOCK_DATASET_PATH = "stock/stocks_dataset"
 
 # === Helper Functions ===
 def load_ai_insights() -> Dict[str, Dict]:
@@ -143,14 +135,10 @@ def load_ai_insights() -> Dict[str, Dict]:
     # Default values if file can't be loaded
     return {
         "predicted_returns": {
-            "gold": "6.2%",
             "stocks": "8.9%",
-            "real_estate": "7.15%"
         },
         "market_volatility": {
-            "gold": "0.02",
             "stocks": "0.06",
-            "real_estate": "0.01"
         }
     }
 
@@ -308,38 +296,6 @@ async def fetch_stock_data(symbol: str, days: int = 30) -> dict:
     
     return await get_local_stock_data(symbol)
 
-async def get_local_stock_data(symbol: str) -> Dict[str, Any]:
-    """Get stock data from local dataset"""
-    file_path = os.path.join(LOCAL_STOCK_DATASET_PATH, f"{symbol}.csv")
-    if not os.path.exists(file_path):
-        return {}
-
-    try:
-        df = pd.read_csv(file_path)
-        if df.empty:
-            return {}
-
-        if 'Date' in df.columns:
-            df['Date'] = pd.to_datetime(df['Date'])
-            df = df.sort_values('Date')
-
-        last_30_days = df.tail(30)
-        if last_30_days.empty:
-            return {}
-
-        data = {
-            "Symbol": symbol.upper(),
-            "Name": symbol.upper(),
-            "Close": last_30_days['Close'].tolist() if 'Close' in last_30_days else [],
-            "Dates": last_30_days['Date'].dt.strftime('%Y-%m-%d').tolist() if 'Date' in last_30_days else [],
-            "Current": last_30_days['Close'].iloc[-1] if 'Close' in last_30_days else 0,
-            "Currency": "USD"
-        }
-
-        return data
-    except Exception as e:
-        logger.error(f"Error loading local stock data for {symbol}: {str(e)}")
-        return {}
 
 async def fetch_multiple_stocks(symbols: List[str]) -> Dict[str, Any]:
     """Fetch multiple stocks in parallel"""
@@ -704,7 +660,7 @@ class AdviceRequest(BaseModel):
     goal: str
 
 # === Routes ===
-@app.post("/chat")
+@router.post("/chat")
 async def chat_with_bot(request: ChatRequest):
     try:
         user_message = request.message.strip()
@@ -887,7 +843,7 @@ USER QUESTION:
             status_code=500
         )
 
-@app.post("/generate-advice")
+@router.post("/generate-advice")
 async def generate_advice(request: AdviceRequest):
     try:
         profile = request.profile
@@ -983,7 +939,7 @@ USER PROFILE:
         )
 
 # === Health Check ===
-@app.get("/health")
+@router.get("/health")
 async def health_check():
     # Test API connectivity
     api_status = {
@@ -1015,11 +971,3 @@ async def health_check():
         }
     }
 
-# === Startup ===
-@app.on_event("startup")
-async def startup_event():
-    app.startup_time = time.time()
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)

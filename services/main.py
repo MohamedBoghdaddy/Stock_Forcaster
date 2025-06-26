@@ -3,6 +3,13 @@ import sys
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# === Initialize FastAPI app ===
+app = FastAPI(
+    title="Unified Financial AI API",
+    version="1.0.0",
+    description="Combines Stock Forecasting and AI Chatbot for financial insights",
+    docs_url="/api/docs"
+)
 # === Add project root to path ===
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(PROJECT_ROOT)
@@ -11,30 +18,26 @@ sys.path.append(PROJECT_ROOT)
 try:
     from stock.stock_router import router as stock_router
     from routes.chatbot_router import router as chatbot_router
+ 
 except ImportError as e:
     print(f"❌ Import Error: {str(e)}")
     sys.exit(1)
 
-# === Initialize FastAPI app ===
-app = FastAPI(
-    title="Unified Financial AI API",
-    version="1.0.0",
-    description="Combines Stock Forecasting and AI Chatbot for financial insights",
-    docs_url="/api/docs"
-)
+
 
 # === Setup CORS ===
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "*"],  # Allow all during dev
+    allow_origins=["*"],  # Your React frontend origin
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Explicitly allows OPTIONS, POST, etc.
+    allow_headers=["*"],  # Must include Authorization
+    expose_headers=["*"]
 )
 
 # === Register routes ===
-app.include_router(stock_router, prefix="/stock", tags=["Stock"])
-app.include_router(chatbot_router, prefix="/chatbot", tags=["Chatbot"])
+app.include_router(stock_router)
+app.include_router(chatbot_router)
 print("✅ Routers mounted: /stock, /chatbot")
 
 # === Health check endpoint ===
